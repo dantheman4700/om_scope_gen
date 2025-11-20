@@ -1,0 +1,48 @@
+{
+  "sections": [
+    {
+      "name": "Executive Summary",
+      "key": "executive_summary",
+      "query": "executive summary company overview value proposition traction customers opportunity",
+      "instruction": "Draft a concise investment-grade summary describing what the company does, the assets for sale, commercial traction, customer profile, and why the deal matters now.",
+      "top_k": 12
+    },
+    {
+      "name": "Company Overview",
+      "key": "company_overview",
+      "query": "founding headquarters team milestones mission leadership investors history business model",
+      "instruction": "Describe the company history, mission, leadership, operational footprint, and major milestones. Highlight scale and organizational strengths.",
+      "top_k": 12
+    },
+    {
+      "name": "Product Overview",
+      "key": "product_overview",
+      "query": "product features differentiators pricing deployment roadmap customers use cases",
+      "instruction": "Explain the platform, core modules, pricing approach, deployment model, and differentiators. Emphasize value propositions and customer outcomes.",
+      "top_k": 12
+    },
+    {
+      "name": "Market Opportunity",
+      "key": "market_opportunity",
+      "query": "market size growth trends competitors tam sam som demand drivers regulation",
+      "instruction": "Summarize the target market size, growth rates, demand drivers, competitor positioning, and why now is the right timing for acquisition.",
+      "top_k": 12
+    },
+    {
+      "name": "Technology & IP",
+      "key": "technology_and_ip",
+      "query": "tech stack architecture data assets patents proprietary automation infrastructure",
+      "instruction": "Detail the technology stack, proprietary assets, patents, automation tooling, and any defensible data advantages. Note scalability and reliability themes.",
+      "top_k": 12
+    }
+  ],
+  "filler_sections": {
+    "Cover Page": "[FILLER – awaiting final template content]",
+    "Disclaimer": "[FILLER – standard legal disclaimer text]",
+    "Table of Contents": "[FILLER – structure auto-generated downstream]",
+    "Terms of the Offering": "[FILLER – Sherwood standardized terms]",
+    "Process & Timeline": "[FILLER – section to be updated with deal process and dates]",
+    "Safe Harbor Statement": "[FILLER – standard forward-looking statement]"
+  }
+}
+

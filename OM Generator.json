@@ -1,0 +1,672 @@
+{
+  "name": "OM Generator",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "OM Generator",
+        "formDescription": "Generate ",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Deal Name",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.3,
+      "position": [
+        -16,
+        0
+      ],
+      "id": "e4e24f2e-2d16-4019-a8a1-f5a42a21922c",
+      "name": "On form submission",
+      "webhookId": "22f3cbe9-ccc7-46ba-a9f8-9558699965e8"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT doc.id         AS document_id,\n       doc.file_name,\n       doc.file_type,\n       doc.mime_type,\n       doc.file_extension,\n       doc.file_size,\n       doc.file_path,\n       doc.processing_status,\n       doc.workflow_step_completed,\n       doc.created_at\nFROM documents AS doc\nWHERE doc.deal_id = '{{ $json.deal_id }}'\nORDER BY doc.created_at DESC;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        448,
+        0
+      ],
+      "id": "081eca83-ec1b-44c7-9c0d-c38a7940577d",
+      "name": "Execute a SQL query",
+      "credentials": {
+        "postgres": {
+          "id": "c3xOtADEPbUVDf5Q",
+          "name": "local psql"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Prefer deal_name; fall back to company_name if needed\nSELECT id AS deal_id, deal_name, company_name\nFROM deals\nWHERE lower(deal_name) = lower('{{ $json['Deal Name'] }}')\nORDER BY created_at DESC NULLS LAST\nLIMIT 1;\n",
+        "options": {
+          "queryReplacement": ""
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        224,
+        0
+      ],
+      "id": "d3c34d10-9ae4-4e89-8506-873c76065fd0",
+      "name": "get deal id",
+      "credentials": {
+        "postgres": {
+          "id": "c3xOtADEPbUVDf5Q",
+          "name": "local psql"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return Object.entries({\n  \"Executive Summary\": \"company overview value proposition traction customers opportunity\",\n  \"Company Overview\":  \"founding headquarters team milestones mission\",\n  \"Product Overview\":  \"product features differentiators pricing deployment roadmap\",\n  \"Market Opportunity\":\"market size growth trends competitors TAM SAM SOM\",\n  \"Technology & IP\":   \"tech stack architecture data assets patents proprietary\"\n}).map(([section, q]) => ({\n  json: {\n    ...$json,                      // keep previous node data\n    deal_id: $json.deal_id,        // explicit in case it's nested\n    section,\n    section_query: q,\n    top_k: 12\n  }\n}));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        0
+      ],
+      "id": "11410091-21fa-4d75-a7ba-14307df7ef85",
+      "name": "List Queries"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "text-embedding-3-small"
+            },
+            {
+              "name": "input",
+              "value": "={{ $json.section_query }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1328,
+        0
+      ],
+      "id": "6cfa942b-072c-49e6-9c05-d6b7ab2cdd1f",
+      "name": "Get Embeddings",
+      "credentials": {
+        "openAiApi": {
+          "id": "MvBM1RRgUTUPPIgM",
+          "name": "Justins OpenAI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1104,
+        0
+      ],
+      "id": "deb6777b-6328-4e53-bb5f-e8a5d91d4919",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH ranked AS (\n  SELECT\n    e.document_id,\n    e.chunk_index,\n    e.file_name,\n    1 - (e.embedding <=> $2::vector) AS score,\n    e.content\n  FROM embeddings e\n  WHERE e.deal_id = $1::uuid\n  ORDER BY e.embedding <=> $2::vector\n  LIMIT $3::int\n)\nSELECT $4::text AS section, document_id, chunk_index, file_name, score, content\nFROM ranked;\n",
+        "options": {
+          "queryReplacement": "=={{ $node[\"get deal id\"].json.deal_id }}, {{ $json.query_vec }}, {{ $json.top_k }}, {{ $('Loop Over Items').item.json.section }}\n"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1776,
+        0
+      ],
+      "id": "8ca973cb-b1ff-4c10-ae24-2bd471de4953",
+      "name": "Execute a SQL query1",
+      "credentials": {
+        "postgres": {
+          "id": "c3xOtADEPbUVDf5Q",
+          "name": "local psql"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const vec = $json.data[0].embedding;\nreturn [{\n  json: {\n    deal_id: $json.deal_id,\n    section: $json.section,\n    query_vec: `[${vec.join(',')}]`,   // convert array → string\n    top_k: 12\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1552,
+        0
+      ],
+      "id": "d70de911-45e3-4420-b76f-dd8efc9f6040",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-pro",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-pro"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are an expert investment analyst who drafts sections of Offering Memorandums (Confidential Information Memorandums) for M&A deals.\nYour writing style is factual, concise, and professional — suitable for investors or corporate buyers.\nUse clear Markdown formatting (headings, paragraphs, and bullet lists only).\nNever invent data; if a detail is missing, insert a short neutral placeholder in *italics* (e.g., *data not provided*).\nAvoid marketing language, superlatives, or hype.\n",
+              "role": "model"
+            },
+            {
+              "content": "=Section: {{ $json.section }}\n\nContext snippets (relevant text from deal materials):\n{{ $json.preview }}\n\nInstruction:\nWrite the full section for the Offering Memorandum titled \"{{ $json.section }}\".\nUse only the information in the provided context.\nIf the context includes multiple fragments, synthesize them into a cohesive narrative.\nKeep tone: investment-grade, factual, and confident.\nOutput as valid Markdown (no YAML, no code fences).\n"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        2224,
+        0
+      ],
+      "id": "876aa73a-bd7d-4cc2-9f03-fd11f6add834",
+      "name": "Message a model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "8TqXVahVnEp8xWGH",
+          "name": "Gemini Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Input: Gemini raw JSON per section\nconst text = $input.first().json.content.parts[0].text || '';\nreturn [{\n  json: {\n    section: $('Loop Over Items').first().json.section || $json._in?.section,   // keep section name if passed\n    markdown: text.trim()\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2576,
+        80
+      ],
+      "id": "2972b8b1-2279-4bcf-a836-43c3c8fafabe",
+      "name": "Code in JavaScript2"
+    },
+    {
+      "parameters": {
+        "jsCode": "// input: many rows from SQL (section, content, score, file_name, chunk_index)\nconst by = {};\nfor (const it of items) {\n  const { section, content, score, file_name, chunk_index } = it.json;\n  // If no data exists in the section, report an empty array.\n  if (!by[section]) by[section] = [];\n\n  // Push section data in by[section], if content exists\n  if (content?.trim()) by[section].push({score, src:`${file_name}#${chunk_index}`, text:content.replace(/\\s+/g,' ').trim()});\n}\n\nreturn Object.entries(by).map(([section, arr])=>{\n  // Sort array by score difference\n  arr.sort((a,b)=>b.score-a.score);\n  \n  // dedupe + cap\n  const seen=new Set();\n  const keep=[];\n  \n  for (const s of arr) { \n    if (!seen.has(s.text)) {\n      seen.add(s.text); keep.push(s); if (keep.length>=10) break; \n    } \n  }\n  \n  const preview = keep.map(s=>s.text).join('\\n\\n').slice(0,6000);\n  return { json: { section, preview } };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        0
+      ],
+      "id": "517d06e0-c476-4839-a6eb-793f1d0f5d45",
+      "name": "Parse Section Parts"
+    },
+    {
+      "parameters": {
+        "jsCode": "const order = [\n  \"Cover Page\",\n  \"Disclaimer\",\n  \"Table of Contents\",\n  \"Executive Summary\",\n  \"Company Overview\",\n  \"Product Overview\",\n  \"Market Opportunity\",\n  \"Technology & IP\",\n  \"Terms of the Offering\",\n  \"Process & Timeline\",\n  \"Safe Harbor Statement\"\n];\n\nconst fillers = {\n  \"Cover Page\": \"[FILLER – awaiting final template content]\",\n  \"Disclaimer\": \"[FILLER – standard legal disclaimer text]\",\n  \"Terms of the Offering\": \"[FILLER – Sherwood standardized terms]\",\n  \"Process & Timeline\": \"[FILLER – section to be updated with deal process and dates]\",\n  \"Safe Harbor Statement\": \"[FILLER – standard forward-looking statement]\"\n};\n\nconst by = {};\nfor (const it of items) by[it.json.section] = it.json.markdown || '';\n\nconst md = order.map(section => {\n  const content = by[section] ?? fillers[section] ?? \"[FILLER]\";\n  return content.startsWith('#') ? content : `## ${section}\\n\\n${content}`;\n}).join('\\n\\n---\\n\\n');\n\nreturn [{ json: { markdown: md, deal_id: $node[\"get deal id\"].json.deal_id } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1424,
+        -464
+      ],
+      "id": "314d1f0f-6383-4503-99cd-f3a9e7349a13",
+      "name": "Summarize OM"
+    },
+    {
+      "parameters": {
+        "content": "Can Merge these two nodes into one JOIN query via deal_id\n- i dont a",
+        "height": 224,
+        "width": 400,
+        "color": 2
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        192,
+        -80
+      ],
+      "id": "83fa6d13-0a8f-4bf7-91d0-a0c93ac1abe4",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": "Dropped deal_id and section unintentionally",
+        "height": 240,
+        "width": 192
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1296,
+        -96
+      ],
+      "id": "b456bdcc-6c36-4932-8b2a-ad8d263c5737",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "content": "## Feedback - Giraldo\n- Lots of positional calls on input values (i.e. .first(), .last(), $json.array[0]) that shouldn't be necessary, also w gemini node its responses are returned in array so [0] is fine\n- Lots of Code node usage that could be done with regular nodes\n- Referencing previous node's outputs with $json in code nodes\n- Add directory creation if it's missing for the final md output?",
+        "height": 176,
+        "width": 640
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -32,
+        -416
+      ],
+      "id": "04a7d09b-9027-4c6c-bf40-7b47c2d73afb",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "content": "This hard codes top-k, section, and section query.",
+        "height": 240,
+        "width": 160,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        640,
+        -96
+      ],
+      "id": "5d869ff8-5258-4934-aa52-b3006c8b6df9",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "content": "This hard codes top-k",
+        "height": 240,
+        "width": 160,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1520,
+        -96
+      ],
+      "id": "86a00329-7213-4e5d-9425-af1a0d62f82d",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "content": "typically ok to use .first() on loop nodes, every item is techincally the \"first\" within its own loop",
+        "height": 224,
+        "width": 176
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2544,
+        -32
+      ],
+      "id": "ca5053e2-900e-4202-b3df-a3d062c7aee0",
+      "name": "Sticky Note5"
+    },
+    {
+      "parameters": {
+        "content": "## Dans Notes\nshould be modal, if files small enough to all fit in context wndow - just do that then generate, better cntext.\nalso building each var piece by piece is ok - but I could easily see context loss, wait I think should happen, more of an agentic setup: pass all file summaries, tell it to extract all variables; this agent will also have the vector search ability allowing it to search the documents for anything not mentioned in summary. Each variable can then be directly mapped into a md template. ",
+        "height": 400
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        848,
+        -576
+      ],
+      "id": "4321b091-e749-4f09-a636-c979f4d1114f",
+      "name": "Sticky Note6"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Deal Name: {{ $('On form submission').first().json['Deal Name'] }}\n\n{{ $('Summarize OM').item.json.markdown }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "=You are an AI assistant tasked with completing an Offering Memorandum. You will be provided with a collection of business and company information. Your goal is to populate the dynamic sections of the following markdown template using that information.\n\n**Your Instructions:**\n\n1.  **Analyze the Provided Information:** Carefully review all the business data, company history, product details, and market analysis you are given.\n2.  **Populate Dynamic Sections:** In the template below, find the sections with instructional text (e.g., \"Write a high-level business summary...\"). Replace these instructions with well-written, professional content generated from the provided information. The tone should be factual, confident, and investment-oriented.\n3.  **Do Not Touch Static Sections:** Sections marked with `[Static TBD, Don't remove]` must be left completely unchanged in the final output.\n4.  **Format the Output:** Your final response must be a single JSON object with one key, `\"md\"`, containing the fully completed markdown as a single string.\n\n---\n\n### **Markdown Template**\n\n```markdown\n# Offering Memorandum\n\n## Cover Page\n[Static TBD, Don't remove]\n\n## Confidentiality Notice\n[Static TBD, Don't remove]\n\n## Table of Contents\n[Static TBD, Don't remove]\n\n## Executive Summary\nWrite a high-level business summary that communicates what the company does, why it matters, and what's for sale. Mention founding date, headquarters, product/solution focus, and any commercial, technical, or market validation. Include a 2-3 sentence explanation of why this is a timely acquisition opportunity and who the ideal buyers might be. Keep the tone factual, confident, and investment-oriented.\n\n## Company Overview\nProvide a narrative of the company's founding story, its strategic mission, key operational milestones, and structural or organizational highlights. Include headquarters location, funding history (if any), number of employees, and general operating model. Make this section feel like a briefing for a partner at a PE firm or strategic buyer reviewing the deal for the first time.\n\n## Product Overview\nDescribe the product or service offering in detail, including the main value proposition, key features, and technical enablers. Mention what differentiates it functionally, aesthetically, or operationally. Include placeholders for product diagrams or visuals, and use bulleted formatting where appropriate for clarity. Structure content to inform both technical and commercial readers.\n\n## Market Opportunity\nSummarize the macro and micro market context. Include total addressable market size, key growth drivers, recent trends, pain points the product addresses, and buyer persona analysis. Quantify market size and growth where possible. Clarify how the company is positioned to win within that market and why now is a strategic time to acquire the business.\n\n## Technology & IP\nDetail the core technologies and proprietary assets that create defensibility. Include software, hardware, patents, trade secrets, clinical or data validations, and internal systems or tooling. Discuss the current state (e.g., R&D maturity, regulatory status, stack components), and clarify what is included in the asset sale (e.g., codebases, patent families, manufacturing lines). Highlight any IP that presents a moat or licensing opportunity.\n\n## Terms & Conditions\n*To be provided*\n\n## Process & Timeline\n[Static TBD, Don't remove]\n\n## Contact Information\n[Static TBD, Don't remove]\n```"
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [
+        2032,
+        -608
+      ],
+      "id": "c5c74aa2-8bed-4463-8ad2-e9c82e45bda9",
+      "name": "Basic LLM Chain"
+    },
+    {
+      "parameters": {
+        "options": {
+          "maxOutputTokens": 500000
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        1856,
+        -224
+      ],
+      "id": "defb132d-8466-40eb-bb4d-efebc2487563",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "8TqXVahVnEp8xWGH",
+          "name": "Gemini Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"$schema\": \"http://json-schema.org/draft-07/schema#\",\n  \"title\": \"Offering Memorandum Output\",\n  \"description\": \"A simple schema to contain the generated markdown for an Offering Memorandum.\",\n  \"type\": \"object\",\n  \"properties\": {\n    \"md\": {\n      \"description\": \"A single string containing the full markdown content of the completed Offering Memorandum.\",\n      \"type\": \"string\"\n    }\n  },\n  \"required\": [\n    \"md\"\n  ]\n}",
+        "autoFix": true
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        2016,
+        -384
+      ],
+      "id": "63f3b3a2-57ac-4b6f-8c55-ce71519535e1",
+      "name": "Structured Output Parser"
+    },
+    {
+      "parameters": {
+        "jsCode": "// This is the standard way to get all input items in the n8n Code Node.\nconst items = $input.all();\n\nconst newItems = [];\n\nfor (const item of items) {\n  // A try...catch block to gracefully handle any errors during processing.\n  try {\n    // 1. Get the markdown string from the incoming JSON.\n    const markdownString = item.json.output.md;\n\n    // If the string doesn't exist, throw an error to be caught below.\n    if (typeof markdownString !== 'string') {\n      throw new Error(\"Input item is missing the 'md' string property.\");\n    }\n\n    // 2. Fix the newline characters from '\\\\n' to a real newline '\\n'.\n    const correctedMarkdown = markdownString.replace(/\\\\n/g, '\\n');\n\n    // 3. Convert the corrected string into a binary Buffer.\n    const buffer = Buffer.from(correctedMarkdown, 'utf-8');\n\n    // 4. Manually construct the binary data object that n8n requires.\n    // This is the most reliable method, with no external helpers.\n    const binaryData = {\n      // 'data' is the conventional property name for the main output file.\n      data: {\n        data: buffer.toString('base64'),\n        fileName: 'offering_memorandum.md',\n        mimeType: 'text/markdown',\n      },\n    };\n\n    // 5. Push the final object, containing the original JSON and the new binary data,\n    // to our results array.\n    newItems.push({\n      json: item.json,\n      binary: binaryData,\n    });\n\n  } catch (error) {\n    // If any step in the 'try' block fails, this will catch the error\n    // and output it clearly, preventing the workflow from failing silently.\n    newItems.push({\n      json: {\n        error: \"Failed to create markdown file.\",\n        message: error.message\n      }\n    });\n  }\n}\n\n// Return the processed items.\nreturn newItems;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2432,
+        -592
+      ],
+      "id": "cc211978-08b7-4625-9e2d-8cde3578bf62",
+      "name": "Create MD file"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node.js built-in modules for handling the filesystem and file paths.\nconst fs = require('fs');\nconst path = require('path');\n\ntry {\n  // --- 1. Get data from previous nodes for the file path ---\n\n  const baseDirNode = $('fetch base dir1');\n  if (!baseDirNode) throw new Error(\"Could not find the node named 'fetch base dir1'.\");\n  const baseDir = baseDirNode.first().json.base_dir;\n\n  const summaryNode = $('Summarize OM');\n  if (!summaryNode) throw new Error(\"Could not find the node named 'Summarize OM'.\");\n  const dealId = summaryNode.first().json.deal_id;\n\n  if (!baseDir) throw new Error(\"Property 'base_dir' was not found in 'fetch base dir1' node output.\");\n  if (!dealId) throw new Error(\"Property 'deal_id' was not found in 'Summarize OM' node output.\");\n\n  // --- 2. Construct the final file path ---\n\n  const fileName = `offering_memorandum_${dealId}.md`;\n  const outPath = path.join(baseDir, fileName);\n\n  // --- 3. Get the markdown content from the binary input ---\n\n  // The input to this node is the binary object from the previous step.\n  const binaryInput = $input.first();\n\n  // Access the base64 encoded string we created in the previous node.\n  // The path is item.binary.data.data\n  const base64Data = binaryInput.binary.data.data;\n\n  // THIS IS THE FIX: Convert the base64 string back into a raw binary Buffer.\n  // This uses a standard Node.js function that will always be available.\n  const fileBuffer = Buffer.from(base64Data, 'base64');\n\n  // --- 4. Write the file to the disk ---\n\n  // fs.writeFileSync can directly handle a Buffer.\n  fs.writeFileSync(outPath, fileBuffer);\n\n  // --- 5. Return a success message ---\n\n  return [{\n    json: {\n      message: 'Markdown file was saved successfully to the filesystem.',\n      md_path: outPath\n    }\n  }];\n\n} catch (error) {\n  // If anything fails, output a clear error message.\n  return [{ json: { error: \"Failed to write file.\", message: error.message } }];\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2704,
+        -592
+      ],
+      "id": "b86300f8-22aa-4c59-a5fd-46771623269b",
+      "name": "Write Md1"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT DISTINCT\n  concat_ws('/', split_part(file_path, '/', 1), split_part(file_path, '/', 2)) AS base_dir\nFROM documents\nWHERE deal_id = '{{ $json.deal_id }}'::uuid\n  AND file_path IS NOT NULL\nLIMIT 1;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1760,
+        -464
+      ],
+      "id": "17dfa584-e8be-49e7-a139-a13ccf863fb7",
+      "name": "fetch base dir1",
+      "credentials": {
+        "postgres": {
+          "id": "c3xOtADEPbUVDf5Q",
+          "name": "local psql"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "On form submission": {
+      "main": [
+        [
+          {
+            "node": "get deal id",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get deal id": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a SQL query": {
+      "main": [
+        [
+          {
+            "node": "List Queries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Queries": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [
+          {
+            "node": "Summarize OM",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Embeddings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Embeddings": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a SQL query1": {
+      "main": [
+        [
+          {
+            "node": "Parse Section Parts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript2": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Section Parts": {
+      "main": [
+        [
+          {
+            "node": "Message a model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize OM": {
+      "main": [
+        [
+          {
+            "node": "fetch base dir1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Structured Output Parser",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain": {
+      "main": [
+        [
+          {
+            "node": "Create MD file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create MD file": {
+      "main": [
+        [
+          {
+            "node": "Write Md1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "fetch base dir1": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "6746c07e-2ef1-4cc1-a132-f820eab8f1d0",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2e5e81524e28060e8b45e677c5117bf633a1dd444f2a54a431c686f19ac78224"
+  },
+  "id": "3MQhTKLb1NkA7jJL",
+  "tags": []
+}

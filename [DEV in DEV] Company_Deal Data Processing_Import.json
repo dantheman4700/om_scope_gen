@@ -1,0 +1,1267 @@
+{
+  "name": "[DEV in DEV] Company/Deal Data Processing/Import",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Data Processing",
+        "formDescription": "add documents and files",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Company Name",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Deal Status",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Deal Description",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Deal Status",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "active"
+                  },
+                  {
+                    "option": "inactive"
+                  },
+                  {
+                    "option": "completed"
+                  },
+                  {
+                    "option": "cancelled"
+                  }
+                ]
+              },
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Files",
+              "fieldType": "file",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.3,
+      "position": [
+        480,
+        64
+      ],
+      "id": "e8732c6a-755d-420b-aa0f-8c01d28b5358",
+      "name": "On form submission",
+      "webhookId": "77d15de9-97b4-493e-87e2-a72a97fd381a"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO deals (\n  company_name, \n  deal_name, \n  deal_description, \n  status, \n  created_by\n) VALUES (\n  '{{ $json[\"Company Name\"] }}',\n  '{{ $json[\"Company Name\"] }}',\n  '{{ $json[\"Deal Description\"] }}',\n  '{{ $json[\"Deal Status\"] }}',\n  'n8n-workflow'\n)\nRETURNING id;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        704,
+        64
+      ],
+      "id": "ac46beff-2a6c-44d5-84c2-39d81d7e804d",
+      "name": "Add to Deals Table/Get Deal ID",
+      "credentials": {
+        "postgres": {
+          "id": "c3xOtADEPbUVDf5Q",
+          "name": "local psql"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1600,
+        64
+      ],
+      "id": "82a57fcd-94a5-4bcf-b2a2-b2689b0c1496",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO documents (\n  deal_id,\n  file_name,\n  file_type,\n  file_size,\n  mime_type,\n  file_extension,\n  file_path,\n  processing_status,\n  n8n_execution_id,\n  workflow_step_completed\n) VALUES (\n  '{{ $json.deal_id }}',\n  '{{ $json.file_name }}',\n  '{{ $json.file_type || $json.file_extension }}',\n  {{ $json.file_size }},\n  '{{ $json.mime_type }}',\n  '{{ $json.file_extension }}',\n  '{{ $json.file_path }}',\n  'uploaded',\n  '{{$execution.id}}',\n  'file_uploaded'\n)\nRETURNING id;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2080,
+        64
+      ],
+      "id": "ffbb8468-7b07-4cbf-9e43-179b80839a80",
+      "name": "Add to Documents Table",
+      "credentials": {
+        "postgres": {
+          "id": "c3xOtADEPbUVDf5Q",
+          "name": "local psql"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst formItem = $('On form submission').last();\nconst dealRow  = $('Add to Deals Table/Get Deal ID').item;\n\nconst companyName = formItem.json['Company Name'] || formItem.json.company_name || 'Company';\nconst dealId = dealRow.json.id || formItem.json.deal_id || 'deal';\n\nconst targetDir = path.join($input.first().json.inputs_dir);\nfs.mkdirSync(targetDir, { recursive: true });\n\nconst binaries = formItem.binary || {};\nconst items = [];\n\nfor (const [key, b] of Object.entries(binaries)) {\n  try {\n    const fname = b.fileName || key;\n    const safeName = path.basename(fname);\n    const outPath = path.join(targetDir, safeName);\n\n    fs.writeFileSync(outPath, Buffer.from(b.data, 'base64'));\n\n    // get size in BYTES (integer)\n    let bytes;\n    try {\n      bytes = fs.statSync(outPath).size;                // preferred\n    } catch {\n      bytes = Buffer.from(b.data, 'base64').length;     // fallback\n    }\n    \n    // Create one item per file\n    items.push({\n      json: {\n        deal_id: dealId,\n        company_name: companyName,\n        target_dir: targetDir,\n        file_name: safeName,\n        file_path: outPath,\n        file_size: bytes,            \n        mime_type: b.mimeType,\n        file_extension: path.extname(safeName).slice(1),\n        success: true\n      }\n    });\n  } catch (e) {\n    items.push({\n      json: {\n        deal_id: dealId,\n        company_name: companyName,\n        target_dir: targetDir,\n        error: e.message,\n        success: false\n      }\n    });\n  }\n}\n\nreturn items;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1376,
+        64
+      ],
+      "id": "e644a825-f9f9-4fac-8aee-63d60c8945ba",
+      "name": "Save Files to Disk"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('Loop Over Items').item.json.file_extension }}",
+                    "rightValue": "xlsx",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "9468a7a3-1371-472f-b3a9-1c68fcaf2d2a"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "xlsx"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "db75508a-b197-4d5e-9d77-860b78133263",
+                    "leftValue": "={{ $('Loop Over Items').item.json.file_extension }}",
+                    "rightValue": "pdf",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "pdf"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d3686f79-b262-444d-a533-4457d85b3d5e",
+                    "leftValue": "={{ $('Loop Over Items').item.json.file_extension }}",
+                    "rightValue": "pptx",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "pptx"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "b82e2326-d9ae-46d1-9ded-c635a29064b7",
+                    "leftValue": "={{ $('Loop Over Items').item.json.file_extension }}",
+                    "rightValue": "docx",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "docx"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "eaedd52e-84bd-4d11-a0f9-68bf5e3bd73a",
+                    "leftValue": "={{ $('Loop Over Items').item.json.file_extension }}",
+                    "rightValue": "csv",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "csv"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "941e1330-618e-4950-b0fc-c52fd9a216c7",
+                    "leftValue": "={{ $('Loop Over Items').item.json.file_extension }}",
+                    "rightValue": "txt",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "txt"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        2288,
+        0
+      ],
+      "id": "2f8da1dd-2549-4953-91c4-0b56786ee9d8",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst XLSX = require('xlsx');\nconst JSZip = require('jszip');\n\nasync function extractFromExcel(filePath) {\n  const buffer = fs.readFileSync(filePath);   // filePath is now defined\n  const workbook = XLSX.readFile(filePath);\n\n  let allText = [];\n  workbook.SheetNames.forEach(sheetName => {\n    const sheet = workbook.Sheets[sheetName];\n    const csvText = XLSX.utils.sheet_to_csv(sheet);\n    allText.push(`Sheet: ${sheetName}\\n${csvText}`);\n  });\n\n  const zip = await JSZip.loadAsync(buffer);\n  let images = [];\n  for (const [filepath, file] of Object.entries(zip.files)) {\n    if (filepath.startsWith('xl/media/')) {\n      const imageData = await file.async('base64');\n      images.push({ name: filepath.split('/').pop(), data: imageData });\n    }\n  }\n\n  return { text: allText.join('\\n\\n'), images };\n}\n\nconst filePath = $('Loop Over Items').item.json.file_path;\nif (!filePath) {\n  return [{ json: { ...$json, error: \"file_path missing\" } }];\n}\n\nconst result = await extractFromExcel(filePath);\nreturn [{ json: { ...$json, ...result } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2512,
+        -480
+      ],
+      "id": "58b72afe-2b5e-479f-8271-79dc1ff4d506",
+      "name": "Convert to text"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst { getDocumentProxy, extractText, extractImages } = require('unpdf');\nconst pdfParse = require('pdf-parse');\n\nasync function extractFromPDF(filePath) {\n  const buffer = fs.readFileSync(filePath);\n\n  // Try unpdf (text + images)\n  try {\n    const pdf = await getDocumentProxy(buffer);\n    const t = await extractText(pdf);\n    const img = await extractImages(pdf);\n    const images = (img.images || []).map((im, i) => ({\n      name: `pdf_image_${i+1}.${im.kind || 'png'}`,\n      data: im.data,            // base64\n      width: im.width,\n      height: im.height,\n      format: im.kind || 'png'\n    }));\n    return { text: t.text || '', images, pageCount: pdf.numPages, success: true, method: 'unpdf' };\n  } catch (e) {\n    // Fallback: pdf-parse (text only)\n    const r = await pdfParse(buffer);\n    return { text: r.text || '', images: [], pageCount: r.numpages, success: true, method: 'pdf-parse-fallback' };\n  }\n}\n\nconst filePath = items[0].json.file_path || $('Loop Over Items').item.json.file_path;\nif (!filePath) return [{ json: { ...items[0].json, error: 'file_path missing' } }];\n\nconst res = await extractFromPDF(filePath);\nreturn [{ json: { ...items[0].json, ...res } }];  // outputs { text, images, ... }\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2512,
+        -336
+      ],
+      "id": "505c92f8-8b92-4374-912d-f495e2ef7485",
+      "name": "Conver to text"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst JSZip = require('jszip');\n\nasync function extractFromPowerPoint(filePath) {\n  const buffer = fs.readFileSync(filePath);\n  const zip = await JSZip.loadAsync(buffer);\n\n  let slideTexts = [];\n  let images = [];\n\n  // Extract slide text\n  for (const [filepath, file] of Object.entries(zip.files)) {\n    if (filepath.startsWith('ppt/slides/slide') && filepath.endsWith('.xml')) {\n      const slideXml = await file.async('text');\n      const textMatches = slideXml.match(/<a:t[^>]*>([^<]*)<\\/a:t>/g);\n      if (textMatches) {\n        const slideText = textMatches\n          .map(m => m.replace(/<[^>]*>/g, ''))\n          .filter(t => t.trim())\n          .join(' ');\n        if (slideText.trim()) {\n          slideTexts.push(slideText);\n        }\n      }\n    }\n\n    // Extract images\n    if (filepath.startsWith('ppt/media/') && /\\.(jpg|jpeg|png|gif|bmp)$/i.test(filepath)) {\n      const imageData = await file.async('base64');\n      images.push({\n        name: filepath.split('/').pop(),\n        data: imageData,\n        format: filepath.split('.').pop().toLowerCase()\n      });\n    }\n  }\n\n  return {\n    text: slideTexts.join('\\n\\n'),\n    slides: slideTexts,\n    images,\n    slideCount: slideTexts.length,\n    success: true\n  };\n}\n\n// Example in n8n Code node:\nconst filePath = items[0].json.file_path || $('Loop Over Items').item.json.file_path;\nif (!filePath) return [{ json: { ...items[0].json, error: 'file_path missing' } }];\n\nconst result = await extractFromPowerPoint(filePath);\nreturn [{ json: { ...items[0].json, ...result } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2512,
+        -192
+      ],
+      "id": "eaee4485-0c43-4735-bf03-51a614f00aa0",
+      "name": "Convert to Text"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst mammoth = require('mammoth');\n\nasync function extractFromDOCX(filePath) {\n  try {\n    // Raw text\n    const textResult = await mammoth.extractRawText({ path: filePath });\n\n    // Images via mammoth.convert (base64 inline)\n    let extractedImages = [];\n    const htmlResult = await mammoth.convertToHtml({ path: filePath }, {\n      convertImage: mammoth.images.imgElement(function(image) {\n        return image.read(\"base64\").then(imageBuffer => {\n          const imageInfo = {\n            name: `docx_image_${extractedImages.length + 1}.${image.contentType.split('/')[1]}`,\n            data: imageBuffer,\n            contentType: image.contentType,\n            altText: image.altText || ''\n          };\n          extractedImages.push(imageInfo);\n          return { src: `data:${image.contentType};base64,${imageBuffer}` };\n        });\n      })\n    });\n\n    return {\n      text: textResult.value || '',\n      html: htmlResult.value || '',\n      images: extractedImages,\n      messages: textResult.messages,\n      success: true,\n    };\n  } catch (error) {\n    return { error: error.message, success: false };\n  }\n}\n\nconst filePath = $('Loop Over Items').item.json.file_path || items[0].json.file_path;\nif (!filePath) return [{ json: { ...items[0].json, error: 'file_path missing' } }];\n\nconst res = await extractFromDOCX(filePath);\nreturn [{ json: { ...items[0].json, ...res } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2512,
+        -48
+      ],
+      "id": "ab86f5f4-7d37-4a3b-b52c-a9ee0ec00d13",
+      "name": "convert to text"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\n\nfunction naiveParse(csvText) {\n  const lines = csvText.split(/\\r?\\n/).filter(l => l.length);\n  const rows = lines.map(l => l.split(',').map(c => c.replace(/^\"(.*)\"$/,'$1')));\n  const headers = rows.length ? rows[0] : [];\n  const data = rows.length > 1 ? rows.slice(1) : [];\n  return { headers, rows: data };\n}\n\nasync function extractFromCSV(filePath) {\n  const text = fs.readFileSync(filePath, 'utf8');\n  try {\n    // optional: use csv-parse/sync if installed\n    const { parse } = require('csv-parse/sync');\n    const records = parse(text, { columns: true, skip_empty_lines: true });\n    return {\n      text,                             // full CSV as text (for embeddings if you want)\n      rows: records,                    // array of objects\n      headers: Object.keys(records[0] || {}),\n      rowCount: records.length,\n      success: true,\n      parser: 'csv-parse/sync'\n    };\n  } catch {\n    const { headers, rows } = naiveParse(text);\n    return {\n      text,\n      rows: rows.map(r => Object.fromEntries(r.map((v,i)=>[headers[i] ?? `col_${i+1}`, v]))),\n      headers,\n      rowCount: rows.length,\n      success: true,\n      parser: 'naive'\n    };\n  }\n}\n\n// n8n: one item per loop iteration\nconst filePath = items[0].json.file_path || $('Loop Over Items').item.json.file_path;\nif (!filePath) return [{ json: { ...items[0].json, error: 'file_path missing' } }];\n\nconst res = await extractFromCSV(filePath);\nreturn [{ json: { ...items[0].json, ...res } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2960,
+        96
+      ],
+      "id": "41220584-e69a-42ed-b2ab-45b86e3d4261",
+      "name": "Convert to Text1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const text = $json.extracted_text || $json.text || '';\nconst size = 1000, overlap = 100;\nconst items = [];\n\nfor (let i = 0, idx = 0; i < text.length; i += (size - overlap), idx++) {\n  const chunk = text.slice(i, i + size).trim();\n  if (!chunk) continue;\n\n  items.push({\n    json: {\n      deal_id: $json.deal_id,\n      document_id: $json.document_id,\n      company_name: $json.company_name,\n      file_name: $json.file_name,\n      file_type: $json.file_type,\n      content_type: 'text',\n      chunk_index: idx,\n      chunk_size: chunk.length,\n      chunk_text: chunk\n    }\n  });\n}\n\nreturn items;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4192,
+        32
+      ],
+      "id": "468c0239-53c4-4334-a937-db754f740fff",
+      "name": "Chunk the text"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE documents\nSET processing_status = 'completed',\n    processed_at = CURRENT_TIMESTAMP,\n    updated_at = CURRENT_TIMESTAMP\nWHERE id = '{{ $('Add to Documents Table').item.json.id }}';\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        5712,
+        352
+      ],
+      "id": "76c5bd93-9081-463e-af11-4bc17a83c2fa",
+      "name": "Update Doc Row",
+      "credentials": {
+        "postgres": {
+          "id": "c3xOtADEPbUVDf5Q",
+          "name": "local psql"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        4688,
+        -48
+      ],
+      "id": "dbdd95c1-e546-457e-8647-ec00f9e97090",
+      "name": "Loop Over Items1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "text-embedding-3-small"
+            },
+            {
+              "name": "input",
+              "value": "={{ $json.chunk_text }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5056,
+        -32
+      ],
+      "id": "658247ed-3ec9-4c67-a554-a7aff62cb394",
+      "name": "Get Embeddings",
+      "credentials": {
+        "openAiApi": {
+          "id": "MvBM1RRgUTUPPIgM",
+          "name": "Justins OpenAI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const v = $json.data?.[0]?.embedding;\nif (!Array.isArray(v)) throw new Error('No embedding array');\nreturn [{ json: { ...$json, embedding_str: `[${v.join(',')}]` } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5280,
+        -32
+      ],
+      "id": "7a8192f6-71eb-4f25-86b7-d136881db76e",
+      "name": "Normalise Embeddings"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO embeddings (deal_id, document_id, content, content_hash, embedding,\n  company_name, file_name, file_type, chunk_index, chunk_size, content_type,\n  embedding_model, n8n_execution_id)\nVALUES (\n  '{{ $(\"Add to Deals Table/Get Deal ID\").item.json.id }}',\n  '{{ $(\"Add to Documents Table\").item.json.id }}',\n  $1, \n  '',\n  '{{ $json.embedding_str }}'::vector,\n  '{{ $(\"On form submission\").item.json[\"Company Name\"] }}',\n  '{{ $(\"Loop Over Items\").item.json.file_name }}',\n  '{{ $(\"Loop Over Items\").item.json.file_extension }}',\n  {{ $(\"Loop Over Items1\").item.json.chunk_index }},\n  {{ $(\"Loop Over Items1\").item.json.chunk_size }},\n  'text',\n  'text-embedding-3-small',\n  '{{$workflow.executionId}}'\n)\nON CONFLICT (document_id, chunk_index) DO NOTHING\nRETURNING id;\n",
+        "options": {
+          "queryReplacement": "=[\n  \"={{$('Loop Over Items1').item.json.chunk_text}}\",\n]\n"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        5472,
+        -32
+      ],
+      "id": "26ec1a4e-e475-49b2-a7c3-e5b13d10e744",
+      "name": "Add to embeddings table",
+      "credentials": {
+        "postgres": {
+          "id": "c3xOtADEPbUVDf5Q",
+          "name": "local psql"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        3744,
+        -368
+      ],
+      "id": "0160fe6d-60ec-418a-a76e-fa29a854bdc0",
+      "name": "Loop Over Items2"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst img = $json.images?.[0];\nif (!img) return [{ json: { error: 'no image' } }];\n\nconst dirPath = $('Asset/Location Variables').first().json.assets;\nconst buffer = Buffer.from(img.data, 'base64');\nconst fileName = img.name;\nconst fullPath = path.join(dirPath, fileName);\n\nfs.writeFileSync(fullPath, buffer);\n\n// --- START: THE FIX ---\n\n// Use the n8n helper function to create a proper binary object\nconst binaryData = await helpers.prepareBinaryData(\n  buffer,\n  fileName,\n  img.contentType || `image/${img.format || 'png'}`\n);\n\nreturn [{\n  json: { \"image_path__\": fullPath, prompt: \"Extract the text from image and output it as raw text\" },\n  binary: {\n    // The key here ('image') MUST match the \"Input Data Field Name\"\n    // in your Gemini node's settings.\n    data: binaryData\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4080,
+        -384
+      ],
+      "id": "da3d6c41-0b5d-49ba-a1a0-71988dfb9cad",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "jsCode": "// After Gemini; we have multiple items (one per image)\nconst captions = items.map(i =>\n  $input.first().json.content.parts[0].text || i.json.text || ''\n).filter(Boolean);\nconst first = $(\"Unified Output\").item.json;\nconsole.log(first)\nconst combined = first.text\n  ? (captions.length ? `${first.text}\\n\\n${captions.join('\\n\\n')}` : first.text)\n  : captions.join('\\n\\n');\n\nreturn [{\n  json: {\n    // SAME shape your helper outputs, but with text appended:\n    text: combined,\n    document_id: first.document_id,\n    deal_id: first.deal_id,\n    company_name: first.company_name,\n    file_name: first.file_name,\n    file_type: first.file_type,\n    success: true,\n    method: 'helper+image_captions'\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4752,
+        -384
+      ],
+      "id": "96607e6f-ac48-4e31-86b3-c822db40cab2",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "28bb884c-5346-4f6c-bec2-be8e47b4fa7b",
+                    "leftValue": "={{ $json.images.length }}",
+                    "rightValue": 0,
+                    "operator": {
+                      "type": "number",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "No Images"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "49b9a3d8-a9fe-4af9-af74-662de5160025",
+                    "leftValue": "={{ $json.images.length }}",
+                    "rightValue": 0,
+                    "operator": {
+                      "type": "number",
+                      "operation": "gt"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Contain Images"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.3,
+      "position": [
+        2832,
+        -80
+      ],
+      "id": "94b58289-613a-4a5a-85c3-c7dca01ec032",
+      "name": "Switch1"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize Gemini response into json.caption\nconst caption = $input.first().json.content.parts[0].text\nreturn [{ json: { ...$json, caption } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4528,
+        -384
+      ],
+      "id": "ee5b9208-5c50-43ea-968e-ff7c0d72eb02",
+      "name": "Code in JavaScript2"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Code node — \"Unify Helper Output\"\n// Connect your PDF/DOCX/XLSX/PPTX helper nodes to inputs 0..3 of this node.\n\nconst inputs = [];\nfor (let i = 0; i < 4; i++) {\n  try { inputs.push(...($input.all(i) || [])); } catch (e) {}\n}\n\nif (inputs.length === 0) {\n  return [{ json: { error: 'No helper outputs connected' } }];\n}\n\n// Prefer the first item that actually has text; else just take the first item.\nconst picked =\n  inputs.find(it => (it.json?.text || it.json?.extracted_text)) ||\n  inputs[0];\n\nconst j = picked.json || {};\nconst text   = j.text || j.extracted_text || '';\nconst images = Array.isArray(j.images) ? j.images : [];\n\n// Pass through useful metadata (add/remove keys as you like)\nconst keepKeys = [\n  'deal_id','document_id','company_name','file_name','file_type',\n  'file_path','target_dir','pageCount','method','success'\n];\n\nconst out = { text, images };\nfor (const k of keepKeys) if (j[k] !== undefined) out[k] = j[k];\n\nreturn [{ json: out }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3440,
+        -192
+      ],
+      "id": "a95f1ed1-385c-41d6-9a75-623932b18d83",
+      "name": "Unified Output"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "bf117fcf-66b1-4f0b-b9a7-840d50706d30",
+              "name": "inputs_dir",
+              "value": "=shrwdvol/{{ $('On form submission').item.json['Company Name'] }}-{{ $('Add to Deals Table/Get Deal ID').item.json.id }}/inputs",
+              "type": "string"
+            },
+            {
+              "id": "82d89365-c6db-413c-a7a1-75defc326d0b",
+              "name": "outputs_dir",
+              "value": "=shrwdvol/{{ $('On form submission').item.json['Company Name'] }}-{{ $('Add to Deals Table/Get Deal ID').item.json.id }}/outputs",
+              "type": "string"
+            },
+            {
+              "id": "a3fe5c2c-a0a4-41ee-9544-97e94a317a93",
+              "name": "config_dir",
+              "value": "=shrwdvol/{{ $('On form submission').item.json['Company Name'] }}-{{ $('Add to Deals Table/Get Deal ID').item.json.id }}/config",
+              "type": "string"
+            },
+            {
+              "id": "525455aa-ff6c-4457-8e62-131b773cc917",
+              "name": "assets",
+              "value": "=shrwdvol/{{ $('On form submission').item.json['Company Name'] }}-{{ $('Add to Deals Table/Get Deal ID').item.json.id }}/assets",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1152,
+        64
+      ],
+      "id": "d580c7c7-7871-4790-a65c-644353a5410f",
+      "name": "Asset/Location Variables"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\n// Pull values from earlier nodes\nconst companyName = $node[\"On form submission\"].json[\"Company Name\"];\nconst dealId = $node[\"Add to Deals Table/Get Deal ID\"].json.id;\n\n// Build the base path once\nconst baseDir = `shrwdvol/${companyName}-${dealId}`;\n\n// Define subfolders\nconst dirsToCreate = [\n  path.join(baseDir, 'inputs'),\n  path.join(baseDir, 'outputs'),\n  path.join(baseDir, 'config'),\n  path.join(baseDir, 'assets'),\n];\n\n// Create each dir\ndirsToCreate.forEach(dir => {\n  fs.mkdirSync(dir, { recursive: true });\n});\n\n// Return for later use\nreturn [{\n  json: {\n    createdDirs: dirsToCreate\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        928,
+        64
+      ],
+      "id": "4bf1fe12-5d2a-488d-9f03-fdc55afe980f",
+      "name": "Code in JavaScript3"
+    },
+    {
+      "parameters": {
+        "content": "## Feedback - Giraldo\n- Duplicate Deal Status in the form (Text and Select One)\n- Potential SQL injection attack weakness (according to n8n)\n- Code node usage that could be done with regular nodes\n- Referencing previous node's outputs with $json in code nodes\n- Referencing node with $node in code nodes (seems to work??)\n- Lots of positional calls on input values (i.e. .first(), .last(), $json.array[0]) that shouldn't be necessary\n- Handles all accepted document formats correctly, via JS code (.xlsx, .pdf, .pptx, .docx, .csv, .txt)\n- Error: Image handling works for all file types. However, it cannot handle multiple images across multiple files at once",
+        "height": 256,
+        "width": 752
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        480,
+        -368
+      ],
+      "id": "1cc31f15-906b-491a-a43a-69359d289439",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "mode": "insert",
+        "tableName": "embeddings",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePGVector",
+      "typeVersion": 1.3,
+      "position": [
+        528,
+        1104
+      ],
+      "id": "37245eba-1420-42eb-a887-c02b06af77bd",
+      "name": "Postgres PGVector Store",
+      "credentials": {
+        "postgres": {
+          "id": "c3xOtADEPbUVDf5Q",
+          "name": "local psql"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        480,
+        1408
+      ],
+      "id": "85d42009-4a2f-495b-a2b2-c6d434377e1b",
+      "name": "Embeddings OpenAI",
+      "credentials": {
+        "openAiApi": {
+          "id": "MvBM1RRgUTUPPIgM",
+          "name": "Justins OpenAI"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsonMode": "expressionData",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.documentDefaultDataLoader",
+      "typeVersion": 1.1,
+      "position": [
+        720,
+        1408
+      ],
+      "id": "3b128f13-37b2-4878-9bd3-c1dd0b5dd290",
+      "name": "Default Data Loader",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "text",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        576,
+        944
+      ],
+      "id": "2c8e46d8-90fb-4a9a-98fa-eab40f8ce801",
+      "name": "Extract from File",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "content": "This should be used for txts and CSVs\n\nthe other for PDFs"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        768,
+        832
+      ],
+      "id": "9965191e-cfb9-4cd0-a8e9-857fd43de6a1",
+      "name": "Sticky Note1",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        576,
+        800
+      ],
+      "id": "6c67fe0b-34a7-4edf-8e77-6961721121cc",
+      "name": "Extract from File1",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "content": "Takes in Deal Name, Status, Description, and Files.\n\nInserts the Deal in to the \"deals\" table\n\nCreates 4 directories for the deal, input + output + config + assets.\n\nLoops over the files - adding each one to the document table - then extracting the text and images, describes the images, combines the text and image descriptions into one text, chunks the text, embeds each chunk.",
+        "height": 368
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1568,
+        -512
+      ],
+      "id": "c39fdacb-cf20-421e-b16c-1fe1ef807c79",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-pro",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-pro"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "capital of illinois"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        3344,
+        1456
+      ],
+      "id": "610a526d-f05a-4f99-859e-55a06e936d8b",
+      "name": "Message a model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "8TqXVahVnEp8xWGH",
+          "name": "Gemini Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "image",
+        "operation": "analyze",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-pro",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-pro"
+        },
+        "inputType": "binary",
+        "options": {
+          "maxOutputTokens": 2048
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        4288,
+        -384
+      ],
+      "id": "f1d015a9-3a93-43f1-b3c0-e3a53e7e87aa",
+      "name": "Analyze an image",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "8TqXVahVnEp8xWGH",
+          "name": "Gemini Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "Ideally this should be reworked. This is how i would like to code a v2. \n\nTakes in deal name, status, description, files, and file context(basically what to focus on, what to ignore if a document is large or talks about multiple deals, not required). From that point we will process the file context and attach each files context to itself, we will then summarize each doc(with its context in mind), small or large(2 choices here: summarize a snippet or split the doc and summarize each piece then combine). Upsert the doc, then chunk it and vectorize it, making sure the doc_id and deal_id are in metadata/fields.",
+        "height": 448
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1888,
+        -560
+      ],
+      "id": "36e648f9-b9cd-4046-8116-17a250872030",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "content": "Idea is on the OM side we can then setup a better extraction step, basically if all files will fit in context window - pass them directly(w/ file context and deal name, etc) get the vars and insert into template.(no need for agent/tools, it has maximum context) \n\nIf too many docs/too large for window - pass the summaries of each doc and then allow vector search for finding the speific section on each doc. Also ensure that the vector search is filtered on deal_id. This would require more of agentic setup but could be setup to not rely on an agents - could easily iterate each topic then combine all searchs then variable extract + template.\n\n\n\nAlso if we do a v2, reruns and tweaks will be super easy, pass old_vars + instructions extract new vars and generate new doc. Could also do a simple or full rerun. simple is pass vars - full is all docs and everything again.\n\nAlso could work all of this into a dashboard pretty easily - only problem would be data access unless we hosting the dashboard on the mac as well.",
+        "height": 768
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2128,
+        -816
+      ],
+      "id": "a92ed76d-b8dd-4719-8015-6a105e60f446",
+      "name": "Sticky Note4"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "On form submission": {
+      "main": [
+        [
+          {
+            "node": "Add to Deals Table/Get Deal ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add to Deals Table/Get Deal ID": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Add to Documents Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add to Documents Table": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Files to Disk": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Convert to text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Conver to text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Convert to Text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "convert to text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Convert to Text1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Chunk the text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to text": {
+      "main": [
+        [
+          {
+            "node": "Switch1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Conver to text": {
+      "main": [
+        [
+          {
+            "node": "Switch1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to Text": {
+      "main": [
+        [
+          {
+            "node": "Switch1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "convert to text": {
+      "main": [
+        [
+          {
+            "node": "Switch1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to Text1": {
+      "main": [
+        [
+          {
+            "node": "Chunk the text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chunk the text": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Doc Row": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items1": {
+      "main": [
+        [
+          {
+            "node": "Update Doc Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Embeddings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Embeddings": {
+      "main": [
+        [
+          {
+            "node": "Normalise Embeddings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalise Embeddings": {
+      "main": [
+        [
+          {
+            "node": "Add to embeddings table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add to embeddings table": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items2": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Analyze an image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch1": {
+      "main": [
+        [
+          {
+            "node": "Chunk the text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unified Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript2": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unified Output": {
+      "main": [
+        [
+          {
+            "node": "Chunk the text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Asset/Location Variables": {
+      "main": [
+        [
+          {
+            "node": "Save Files to Disk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript3": {
+      "main": [
+        [
+          {
+            "node": "Asset/Location Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings OpenAI": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Postgres PGVector Store",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Default Data Loader": {
+      "ai_document": [
+        [
+          {
+            "node": "Postgres PGVector Store",
+            "type": "ai_document",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze an image": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "2455f1de-bbac-4c47-95e6-5d58dc7b5397",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2e5e81524e28060e8b45e677c5117bf633a1dd444f2a54a431c686f19ac78224"
+  },
+  "id": "CdYiDI09vWotU16a",
+  "tags": []
+}
