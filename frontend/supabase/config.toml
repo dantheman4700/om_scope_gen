@@ -1,0 +1,15 @@
+project_id = "wkyvpuzailhrnybmiqoh"
+
+[functions.scrape-website]
+# JWT verification enabled for security - only authenticated users can scrape websites
+
+[functions.search-trademarks]
+# JWT verification enabled for security - only authenticated users can search trademarks
+
+[functions.prospects]
+verify_jwt = false
+# Public endpoint for N8n and Dynamics integration - uses service role key for authentication
+
+[functions.webhooks-dynamics]
+verify_jwt = false
+# Public webhook endpoint for Dynamics 365 to push updates

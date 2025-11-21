@@ -10,7 +10,7 @@ FastAPI backend that ingests deal collateral, stores structured representations 
 - **Local storage (`data/deals/<deal_id>/`)** keeps uploaded files (`inputs/`) and generated artifacts (`outputs/`).
 - **Postgres 17 + pgvector** (see `vectordb_schema.sql`) hosts the canonical tables (`deals`, `documents`, `embeddings`, `processing_logs`, etc.). The project connects to the existing Docker-hosted instance on the Mac mini.
 
-There is no frontend, auth, or job runner layer anymore—deployment is a simple FastAPI service sitting behind Nginx/systemd (or another process manager).
+- **Vite/React app (`frontend/`)** provides the deal / OM workspace UI (imported from `venture-canvas-place-main`). It consumes the FastAPI endpoints listed below.
 
 ## Prerequisites
 
@@ -39,7 +39,34 @@ cp server/env.example .env
 uvicorn server.api:app --reload
 ```
 
-The API listens on `http://localhost:8000`. Point Nginx/systemd/pm2/etc. at the same command for a persistent deployment.
+### Frontend (Vite + React)
+
+```bash
+cd frontend
+npm install           # or bun/pnpm if you prefer
+npm run dev           # defaults to http://localhost:5173
+```
+
+Create `frontend/.env` (or `.env.local`) with at least:
+
+```
+VITE_API_BASE_URL=http://localhost:8000
+```
+
+so the UI can hit the FastAPI server. The default dev servers are:
+
+- Backend: `http://localhost:8000`
+- Frontend: `http://localhost:5173`
+
+Both can run concurrently from the repo root:
+
+```bash
+# Terminal 1
+uvicorn server.api:app --reload
+
+# Terminal 2
+cd frontend && npm run dev
+```
 
 ### Database schema
 
@@ -148,7 +175,8 @@ Feel free to adjust either file to change the tone or structure of the generated
 
 ## Deployment Notes
 
-- Recommended to run the FastAPI app under **systemd** or **supervisor**, optionally behind **Nginx** for TLS/host routing. Sample unit files are in `deploy/systemd/` if you need a starting point.
+- Recommended to run the FastAPI app under **systemd** or **supervisor**, optionally behind **Nginx** for TLS/host routing. Sample unit files are in `deploy/systemd/`.
+- The Vite app can be served via `npm run build && npm run preview`, or baked into whichever static hosting tier you prefer. Configure `VITE_API_BASE_URL` accordingly.
 - Ensure the service process has access to:
   - the shared filesystem mount containing `data/deals`
   - the Docker-hosted Postgres instance (localhost:5432)
