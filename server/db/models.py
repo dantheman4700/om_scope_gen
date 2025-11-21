@@ -16,6 +16,7 @@ from sqlalchemy import (
     Text,
     ForeignKey,
     LargeBinary,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -175,4 +176,182 @@ class ProcessingStat(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
     )
+
+
+# ---------------------------------------------------------------------------
+# Platform models powering the non-OM API surface
+# ---------------------------------------------------------------------------
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False, index=True)
+    full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    role: Mapped[str] = mapped_column(String(50), nullable=False, default="member")
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    owned_projects: Mapped[list["Project"]] = relationship(
+        "Project",
+        back_populates="owner",
+    )
+    owned_teams: Mapped[list["Team"]] = relationship(
+        "Team",
+        back_populates="owner",
+    )
+    team_memberships: Mapped[list["TeamMember"]] = relationship(
+        "TeamMember",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+
+class Team(Base):
+    __tablename__ = "teams"
+
+    id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    owner_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    owner: Mapped[User] = relationship("User", back_populates="owned_teams")
+    members: Mapped[list["TeamMember"]] = relationship(
+        "TeamMember",
+        back_populates="team",
+        cascade="all, delete-orphan",
+    )
+    projects: Mapped[list["Project"]] = relationship("Project", back_populates="team")
+
+
+class TeamMember(Base):
+    __tablename__ = "team_members"
+    __table_args__ = (
+        UniqueConstraint("team_id", "user_id", name="uq_team_member"),
+    )
+
+    id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    team_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    role: Mapped[str] = mapped_column(String(50), nullable=False, default="member")
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    team: Mapped[Team] = relationship("Team", back_populates="members")
+    user: Mapped[User] = relationship("User", back_populates="team_memberships")
+
+
+class Project(Base):
+    __tablename__ = "projects"
+
+    id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    flags: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    owner_id: Mapped[UUID_t | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    team_id: Mapped[UUID_t | None] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    owner: Mapped[User | None] = relationship("User", back_populates="owned_projects")
+    team: Mapped[Team | None] = relationship("Team", back_populates="projects")
+    files: Mapped[list["ProjectFile"]] = relationship(
+        "ProjectFile",
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+    runs: Mapped[list["Run"]] = relationship(
+        "Run",
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+
+
+class ProjectFile(Base):
+    __tablename__ = "project_files"
+
+    id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    filename: Mapped[str] = mapped_column(String(500), nullable=False)
+    path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    media_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    checksum: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    native_token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    summary_token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_summarized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    summary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_too_large: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pdf_page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    use_summary_for_generation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    summary_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    project: Mapped[Project] = relationship("Project", back_populates="files")
+
+
+class Run(Base):
+    __tablename__ = "runs"
+
+    id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+    mode: Mapped[str] = mapped_column(String(20), nullable=False, default="full")
+    research_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="none")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    result_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    params: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    included_file_ids: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
+    parent_run_id: Mapped[UUID_t | None] = mapped_column(UUID(as_uuid=True), ForeignKey("runs.id"), nullable=True)
+    extracted_variables_artifact_id: Mapped[UUID_t | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+    project: Mapped[Project] = relationship("Project", back_populates="runs")
+    parent_run: Mapped["Run" | None] = relationship("Run", remote_side=[id], uselist=False)
+    steps: Mapped[list["RunStep"]] = relationship("RunStep", back_populates="run", cascade="all, delete-orphan")
+    artifacts: Mapped[list["Artifact"]] = relationship("Artifact", back_populates="run", cascade="all, delete-orphan")
+
+
+class RunStep(Base):
+    __tablename__ = "run_steps"
+
+    id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    run_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+    logs: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    run: Mapped[Run] = relationship("Run", back_populates="steps")
+
+
+class Artifact(Base):
+    __tablename__ = "artifacts"
+
+    id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    run_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    kind: Mapped[str] = mapped_column(String(50), nullable=False)
+    path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    meta: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    run: Mapped[Run] = relationship("Run", back_populates="artifacts")
 
