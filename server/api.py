@@ -16,16 +16,19 @@ from server.core.history_profiles import EMBED_DIMENSIONS
 from server.routes import (
     artifacts_router,
     auth_router,
+    deals_router,
+    deal_runs_router,
     embeddings_router,
     files_router,
+    listings_router,
     om_router,
-    project_runs_router,
-    projects_router,
+    oms_router,
     runs_router,
     system_router,
     teams_router,
 )
 from server.services import JobRegistry, VectorStore
+from server.services.document_ingestion import DocumentIngestionService
 
 
 def create_app() -> FastAPI:
@@ -52,16 +55,22 @@ def create_app() -> FastAPI:
     vector_store = VectorStore(VECTOR_STORE_DSN, embedding_dim=embedding_dim)
     vector_store.ensure_schema()
     job_registry = JobRegistry(max_workers=2, vector_store=vector_store)
+    ingestion_service = DocumentIngestionService(vector_store=vector_store, max_workers=2)
 
     app.state.vector_store = vector_store
     app.state.job_registry = job_registry
+    app.state.document_ingestion = ingestion_service
+
+    app.add_event_handler("shutdown", ingestion_service.shutdown)
 
     app.include_router(system_router)
     app.include_router(auth_router)
-    app.include_router(projects_router)
+    app.include_router(deals_router)
     app.include_router(teams_router)
+    app.include_router(listings_router)
     app.include_router(files_router)
-    app.include_router(project_runs_router)
+    app.include_router(deal_runs_router)
+    app.include_router(oms_router)
     app.include_router(runs_router)
     app.include_router(artifacts_router)
     app.include_router(embeddings_router)

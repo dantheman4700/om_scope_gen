@@ -10,7 +10,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session
 
@@ -24,9 +24,12 @@ from ..dependencies import db_session, get_storage
 from ..db import models
 from ..storage.projects import ensure_project_structure
 from ..adapters.storage import StorageBackend
+from ..security import rbac
+from .auth import SessionUser, require_roles
 
 
-router = APIRouter(prefix="/projects/{project_id}/runs", tags=["runs"])
+router = APIRouter(prefix="/deals/{deal_id}/runs", tags=["runs"])
+oms_router = APIRouter(prefix="/deals/{deal_id}/oms", tags=["oms"])
 run_router = APIRouter(prefix="/runs", tags=["runs"])
 
 
@@ -34,7 +37,7 @@ class CreateRunRequest(BaseModel):
     run_mode: str = Field("full", pattern="^(full|fast)$")
     research_mode: ResearchMode = ResearchMode.NONE
     interactive: bool = False
-    project_identifier: Optional[str] = None
+    deal_identifier: Optional[str] = None
     instructions: Optional[str] = None
     enable_vector_store: bool = True
     enable_web_search: bool = False
@@ -45,7 +48,7 @@ class CreateRunRequest(BaseModel):
 
 class RunStatusResponse(BaseModel):
     id: UUID
-    project_id: str
+    deal_id: str
     status: str
     run_mode: str
     research_mode: str
@@ -59,6 +62,15 @@ class RunStatusResponse(BaseModel):
     included_file_ids: List[str] = Field(default_factory=list)
     parent_run_id: Optional[str] = None
     extracted_variables_artifact_id: Optional[UUID] = None
+
+
+class DealOmResponse(BaseModel):
+    run_id: UUID
+    status: str
+    created_at: datetime
+    finished_at: Optional[datetime] = None
+    rendered_artifact_id: Optional[UUID] = None
+    variables_artifact_id: Optional[UUID] = None
 
 
 class RunStepResponse(BaseModel):
@@ -80,22 +92,22 @@ def _registry(request: Request) -> JobRegistry:
     return registry
 
 
-def _storage_key(project_id: str, relative_path: str) -> str:
+def _storage_key(deal_id: str, relative_path: str) -> str:
     clean = relative_path.replace("\\", "/").lstrip("/")
-    return f"projects/{project_id}/{clean}"
+    return f"projects/{deal_id}/{clean}"
 
 
 async def _ensure_artifact_local(
-    project_id: str,
+    deal_id: str,
     artifact: models.Artifact,
     storage: StorageBackend,
 ) -> Path:
-    paths = ensure_project_structure(DATA_ROOT, project_id)
+    paths = ensure_project_structure(DATA_ROOT, deal_id)
     local_path = (paths.root / artifact.path).resolve()
     local_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not local_path.exists():
-        storage_key = _storage_key(project_id, artifact.path)
+        storage_key = _storage_key(deal_id, artifact.path)
         await run_in_threadpool(storage.download_to_path, storage_key, local_path)
 
     return local_path
@@ -180,6 +192,24 @@ def _markdown_to_docx_bytes(content: str) -> io.BytesIO:
     return buffer
 
 
+def _get_rendered_artifact(db: Session, run_id: UUID) -> models.Artifact | None:
+    return (
+        db.query(models.Artifact)
+        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
+        .order_by(models.Artifact.created_at.desc())
+        .first()
+    )
+
+
+def _get_variables_artifact(db: Session, run_id: UUID) -> models.Artifact | None:
+    return (
+        db.query(models.Artifact)
+        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "variables")
+        .order_by(models.Artifact.created_at.desc())
+        .first()
+    )
+
+
 def _job_to_response(job: JobStatus) -> RunStatusResponse:
     data = job.to_dict()
     params = data.get("params", {}) or {}
@@ -193,7 +223,7 @@ def _job_to_response(job: JobStatus) -> RunStatusResponse:
 def _db_run_to_response(run: models.Run) -> RunStatusResponse:
     return RunStatusResponse(
         id=run.id,
-        project_id=str(run.project_id),
+        deal_id=str(run.deal_id),
         status=run.status,
         run_mode=run.mode,
         research_mode=run.research_mode,
@@ -212,46 +242,48 @@ def _db_run_to_response(run: models.Run) -> RunStatusResponse:
 
 @router.get("/", response_model=List[RunStatusResponse])
 async def list_runs(
-    project_id: str,
+    deal_id: str,
     request: Request,
     db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(require_roles("viewer", "editor", "admin")),
 ) -> List[RunStatusResponse]:
     registry = _registry(request)
-    jobs = registry.list_jobs(project_id)
+    jobs = registry.list_jobs(deal_id)
     job_map: dict[UUID, JobStatus] = {job.id: job for job in jobs}
 
     try:
-        project_uuid = UUID(project_id)
+        deal_uuid = UUID(deal_id)
     except ValueError:
-        project_uuid = None
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deal not found")
+
+    rbac.ensure_deal_access(db, current_user, deal_uuid)
 
     responses: List[RunStatusResponse] = []
 
-    if project_uuid is not None:
-        db_runs = (
-            db.query(models.Run)
-            .filter(models.Run.project_id == project_uuid)
-            .order_by(models.Run.created_at.desc())
-            .all()
-        )
-        for run in db_runs:
-            response = _db_run_to_response(run)
-            job = job_map.pop(run.id, None)
-            if job is not None:
-                live = _job_to_response(job)
-                response.status = live.status
-                response.started_at = live.started_at or response.started_at
-                response.finished_at = live.finished_at or response.finished_at
-                response.result_path = live.result_path or response.result_path
-                response.error = live.error or response.error
-                response.params = live.params or response.params
-                response.instructions = live.instructions or response.instructions
-                response.included_file_ids = live.included_file_ids or response.included_file_ids
-                response.parent_run_id = live.parent_run_id or response.parent_run_id
-                response.extracted_variables_artifact_id = (
-                    live.extracted_variables_artifact_id or response.extracted_variables_artifact_id
-                )
-            responses.append(response)
+    db_runs = (
+        db.query(models.Run)
+        .filter(models.Run.deal_id == deal_uuid)
+        .order_by(models.Run.created_at.desc())
+        .all()
+    )
+    for run in db_runs:
+        response = _db_run_to_response(run)
+        job = job_map.pop(run.id, None)
+        if job is not None:
+            live = _job_to_response(job)
+            response.status = live.status
+            response.started_at = live.started_at or response.started_at
+            response.finished_at = live.finished_at or response.finished_at
+            response.result_path = live.result_path or response.result_path
+            response.error = live.error or response.error
+            response.params = live.params or response.params
+            response.instructions = live.instructions or response.instructions
+            response.included_file_ids = live.included_file_ids or response.included_file_ids
+            response.parent_run_id = live.parent_run_id or response.parent_run_id
+            response.extracted_variables_artifact_id = (
+                live.extracted_variables_artifact_id or response.extracted_variables_artifact_id
+            )
+        responses.append(response)
 
     # Include any remaining in-memory jobs (e.g., very new jobs not yet persisted)
     for job in job_map.values():
@@ -263,7 +295,18 @@ async def list_runs(
 
 
 @router.post("/", response_model=RunStatusResponse, status_code=status.HTTP_201_CREATED)
-async def create_run(project_id: str, payload: CreateRunRequest, request: Request) -> RunStatusResponse:
+async def create_run(
+    deal_id: str,
+    payload: CreateRunRequest,
+    request: Request,
+    db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(require_roles("editor", "admin")),
+) -> RunStatusResponse:
+    try:
+        deal_uuid = UUID(deal_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deal not found")
+    rbac.ensure_deal_access(db, current_user, deal_uuid)
     registry = _registry(request)
     included_ids = [str(file_id) for file_id in payload.included_file_ids]
     parent_run_id = str(payload.parent_run_id) if payload.parent_run_id else None
@@ -272,7 +315,7 @@ async def create_run(project_id: str, payload: CreateRunRequest, request: Reques
         run_mode = "fast"
     options = RunOptions(
         interactive=payload.interactive,
-        project_identifier=payload.project_identifier,
+        deal_identifier=payload.deal_identifier,
         run_mode=run_mode,
         research_mode=payload.research_mode.value,
         instructions_override=payload.instructions,
@@ -282,7 +325,7 @@ async def create_run(project_id: str, payload: CreateRunRequest, request: Reques
         parent_run_id=parent_run_id,
         variables_delta=payload.what_to_change,
     )
-    job = registry.create_job(project_id, options)
+    job = registry.create_job(deal_id, options)
     data = job.to_dict()
     params = data.get("params", {}) or {}
     data["instructions"] = params.get("instructions_override")
@@ -294,31 +337,148 @@ async def create_run(project_id: str, payload: CreateRunRequest, request: Reques
 
 @router.get("/{run_id}", response_model=RunStatusResponse)
 async def get_run(
-    project_id: str,
+    deal_id: str,
     run_id: UUID,
     request: Request,
     db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(require_roles("viewer", "editor", "admin")),
 ) -> RunStatusResponse:
     registry = _registry(request)
     job = registry.get_job(run_id)
-    if job is not None and job.project_id == project_id:
+    if job is not None and job.deal_id == deal_id:
+        rbac.ensure_deal_access(db, current_user, UUID(deal_id))
         return _job_to_response(job)
 
     run = db.get(models.Run, run_id)
-    if run is not None and str(run.project_id) == project_id:
+    if run is not None and str(run.deal_id) == deal_id:
+        rbac.ensure_deal_access(db, current_user, run.deal_id)
         return _db_run_to_response(run)
 
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+
+
+@oms_router.get("/", response_model=List[DealOmResponse])
+async def list_deal_oms(
+    deal_id: str,
+    db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(require_roles("viewer", "editor", "admin")),
+) -> List[DealOmResponse]:
+    try:
+        deal_uuid = UUID(deal_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deal not found")
+
+    rbac.ensure_deal_access(db, current_user, deal_uuid)
+
+    runs = (
+        db.query(models.Run)
+        .filter(models.Run.deal_id == deal_uuid)
+        .order_by(models.Run.created_at.desc())
+        .all()
+    )
+    run_ids = [run.id for run in runs]
+    artifacts_map: dict[UUID, dict[str, Optional[UUID]]] = {
+        run.id: {"rendered": None, "variables": None} for run in runs
+    }
+
+    if run_ids:
+        artifacts = (
+            db.query(models.Artifact)
+            .filter(
+                models.Artifact.run_id.in_(run_ids),
+                models.Artifact.kind.in_(["rendered_doc", "variables"]),
+            )
+            .all()
+        )
+        for artifact in artifacts:
+            slot = artifacts_map.get(artifact.run_id)
+            if slot is None:
+                continue
+            if artifact.kind == "rendered_doc":
+                slot["rendered"] = artifact.id
+            elif artifact.kind == "variables":
+                slot["variables"] = artifact.id
+
+    responses: List[DealOmResponse] = []
+    for run in runs:
+        slots = artifacts_map.get(run.id) or {}
+        responses.append(
+            DealOmResponse(
+                run_id=run.id,
+                status=run.status,
+                created_at=run.created_at,
+                finished_at=run.finished_at,
+                rendered_artifact_id=slots.get("rendered"),
+                variables_artifact_id=slots.get("variables"),
+            )
+        )
+
+    return responses
+
+
+@oms_router.get("/{run_id}/download/{format}")
+async def download_deal_om(
+    deal_id: str,
+    run_id: UUID,
+    format: str,
+    db: Session = Depends(db_session),
+    storage: StorageBackend = Depends(get_storage),
+    current_user: SessionUser = Depends(require_roles("viewer", "editor", "admin")),
+):
+    run = db.get(models.Run, run_id)
+    if not run or str(run.deal_id) != deal_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found for deal")
+    if run.status != "success":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run must be successful before exporting")
+
+    rbac.ensure_deal_access(db, current_user, run.deal_id)
+
+    artifact = _get_rendered_artifact(db, run_id)
+    if artifact is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rendered document not found")
+
+    try:
+        local_path = await _ensure_artifact_local(str(run.deal_id), artifact, storage)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to download artifact: {exc}")
+
+    if not local_path.exists():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Rendered document is unavailable")
+
+    format_normalized = format.lower()
+    if format_normalized == "md":
+        filename = Path(artifact.path).name
+        return FileResponse(
+            str(local_path),
+            filename=filename,
+            media_type="text/markdown",
+        )
+    if format_normalized == "docx":
+        try:
+            content = local_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to read artifact: {exc}")
+
+        buffer = _markdown_to_docx_bytes(content)
+        filename_stem = Path(artifact.path).stem or f"run-{run.id}"
+        docx_filename = f"{filename_stem}.docx"
+        headers = {"Content-Disposition": f'attachment; filename="{docx_filename}"'}
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        return StreamingResponse(buffer, media_type=media_type, headers=headers)
+
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported format; use 'md' or 'docx'")
 
 
 @run_router.get("/{run_id}", response_model=RunStatusResponse)
-async def get_run_by_id(run_id: UUID, db: Session = Depends(db_session)) -> RunStatusResponse:
-    run = db.get(models.Run, run_id)
-    if not run:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+async def get_run_by_id(
+    run_id: UUID,
+    db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(require_roles("viewer", "editor", "admin")),
+) -> RunStatusResponse:
+    run = rbac.ensure_run_access(db, current_user, run_id)
     return RunStatusResponse(
         id=run.id,
-        project_id=str(run.project_id),
+        deal_id=str(run.deal_id),
         status=run.status,
         run_mode=run.mode,
         research_mode=run.research_mode,
@@ -336,10 +496,12 @@ async def get_run_by_id(run_id: UUID, db: Session = Depends(db_session)) -> RunS
 
 
 @run_router.get("/{run_id}/steps", response_model=List[RunStepResponse])
-async def get_run_steps(run_id: UUID, db: Session = Depends(db_session)) -> List[RunStepResponse]:
-    run = db.get(models.Run, run_id)
-    if not run:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+async def get_run_steps(
+    run_id: UUID,
+    db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(require_roles("viewer", "editor", "admin")),
+) -> List[RunStepResponse]:
+    run = rbac.ensure_run_access(db, current_user, run_id)
     steps = (
         db.query(models.RunStep)
         .filter(models.RunStep.run_id == run_id)
@@ -360,6 +522,7 @@ async def embed_run_output(
     request: Request,
     db: Session = Depends(db_session),
     storage: StorageBackend = Depends(get_storage),
+    current_user: SessionUser = Depends(require_roles("editor", "admin")),
 ):
     """
     Create a compact profile embedding for a run using its extracted variables.
@@ -369,9 +532,7 @@ async def embed_run_output(
     if vector_store is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Vector store unavailable")
 
-    run = db.get(models.Run, run_id)
-    if not run:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    run = rbac.ensure_run_access(db, current_user, run_id)
     if run.status != "success":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run must be successful before embedding")
 
@@ -386,16 +547,16 @@ async def embed_run_output(
     if variables_artifact is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No extracted variables available for embedding")
 
-    project_uuid = None
-    project_id_str = str(run.project_id)
+    deal_uuid = None
+    deal_id_str = str(run.deal_id)
     try:
-        project_uuid = UUID(project_id_str)
+        deal_uuid = UUID(deal_id_str)
     except Exception:
-        project_uuid = None
+        deal_uuid = None
 
     # Load the extracted variables
     try:
-        local_path = await _ensure_artifact_local(project_id_str, variables_artifact, storage)
+        local_path = await _ensure_artifact_local(deal_id_str, variables_artifact, storage)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to download variables: {exc}")
 
@@ -430,7 +591,7 @@ async def embed_run_output(
 
     # Store full variables in metadata for reference
     metadata = {
-        "project_id": project_id_str,
+        "deal_id": deal_id_str,
         "run_id": str(run.id),
         "mode": run.mode,
         "research_mode": run.research_mode,
@@ -459,7 +620,7 @@ async def embed_run_output(
     try:
         embedding_id = vector_store.upsert_embedding(
             embedding=embedding,
-            project_id=project_uuid,
+        deal_id=deal_uuid,
             doc_kind="rendered_scope",
             metadata=metadata,
         )
@@ -474,27 +635,20 @@ async def download_run_docx(
     run_id: UUID,
     db: Session = Depends(db_session),
     storage: StorageBackend = Depends(get_storage),
+    current_user: SessionUser = Depends(require_roles("viewer", "editor", "admin")),
 ):
-    run = db.get(models.Run, run_id)
-    if not run:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    run = rbac.ensure_run_access(db, current_user, run_id)
     if run.status != "success":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run must be successful before exporting")
 
-    artifact = (
-        db.query(models.Artifact)
-        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
-        .order_by(models.Artifact.created_at.desc())
-        .first()
-    )
-
+    artifact = _get_rendered_artifact(db, run_id)
     if artifact is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rendered document not found")
 
-    project_id_str = str(run.project_id)
+    deal_id_str = str(run.deal_id)
 
     try:
-        local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
+        local_path = await _ensure_artifact_local(deal_id_str, artifact, storage)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to download artifact: {exc}")
 

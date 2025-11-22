@@ -179,3 +179,16 @@ def logout(response: Response) -> None:
 def whoami(current_user: SessionUser = Depends(get_current_user)) -> UserResponse:
     return current_user
 
+
+def require_roles(*roles: str):
+    allowed = set(roles) if roles else {"viewer", "editor", "admin"}
+
+    def dependency(current_user: SessionUser = Depends(get_current_user)) -> SessionUser:
+        if current_user.role == "admin":
+            return current_user
+        if current_user.role not in allowed:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+        return current_user
+
+    return dependency
+

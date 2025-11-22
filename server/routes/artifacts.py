@@ -20,6 +20,8 @@ from server.core.config import ARTIFACT_URL_EXPIRY_SECONDS
 from ..adapters.storage import StorageBackend
 from ..dependencies import db_session, get_storage
 from ..db import models
+from ..security import rbac
+from .auth import SessionUser, require_roles
 
 
 router = APIRouter(tags=["artifacts"])
@@ -37,7 +39,12 @@ class ArtifactResponse(BaseModel):
 
 
 @router.get("/runs/{run_id}/artifacts", response_model=List[ArtifactResponse])
-async def list_artifacts_by_run(run_id: UUID, db: Session = Depends(db_session)) -> List[ArtifactResponse]:
+async def list_artifacts_by_run(
+    run_id: UUID,
+    db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(require_roles("viewer", "editor", "admin")),
+) -> List[ArtifactResponse]:
+    rbac.ensure_run_access(db, current_user, run_id)
     artifacts = (
         db.query(models.Artifact)
         .filter(models.Artifact.run_id == run_id)
@@ -51,9 +58,16 @@ async def list_artifacts_by_run(run_id: UUID, db: Session = Depends(db_session))
     return [ArtifactResponse.model_validate(artifact) for artifact in artifacts]
 
 
-@router.get("/projects/{project_id}/runs/{run_id}/artifacts", response_model=List[ArtifactResponse])
-async def list_artifacts(project_id: UUID, run_id: UUID, db: Session = Depends(db_session)) -> List[ArtifactResponse]:
-    run = _get_run(db, project_id, run_id)
+@router.get("/deals/{deal_id}/runs/{run_id}/artifacts", response_model=List[ArtifactResponse])
+async def list_artifacts(
+    deal_id: UUID,
+    run_id: UUID,
+    db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(require_roles("viewer", "editor", "admin")),
+) -> List[ArtifactResponse]:
+    run = rbac.ensure_run_access(db, current_user, run_id)
+    if run.deal_id != deal_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     artifacts = (
         db.query(models.Artifact)
         .filter(models.Artifact.run_id == run.id)
@@ -68,6 +82,7 @@ async def download_artifact(
     artifact_id: UUID,
     db: Session = Depends(db_session),
     storage: StorageBackend = Depends(get_storage),
+    current_user: SessionUser = Depends(require_roles("viewer", "editor", "admin")),
 ):
     artifact = db.get(models.Artifact, artifact_id)
     if not artifact:
@@ -77,7 +92,9 @@ async def download_artifact(
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact run not found")
 
-    storage_key = _storage_key(str(run.project_id), artifact.path)
+    rbac.ensure_run_access(db, current_user, run.id)
+
+    storage_key = _storage_key(str(run.deal_id), artifact.path)
 
     signed_url = storage.generate_signed_url(storage_key, ARTIFACT_URL_EXPIRY_SECONDS)
     if signed_url:
@@ -101,16 +118,9 @@ async def download_artifact(
     )
 
 
-def _get_run(db: Session, project_id: UUID, run_id: UUID) -> models.Run:
-    run = db.get(models.Run, run_id)
-    if not run or run.project_id != project_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
-    return run
-
-
-def _storage_key(project_id: str, relative_path: str) -> str:
+def _storage_key(deal_id: str, relative_path: str) -> str:
     clean = relative_path.lstrip("/")
-    return f"projects/{project_id}/{clean}"
+    return f"projects/{deal_id}/{clean}"
 
 
 def _cleanup_temp_file(path: Path) -> None:  # pragma: no cover - background cleanup

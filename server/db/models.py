@@ -37,16 +37,23 @@ class Deal(Base):
     deal_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     deal_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="active")
+    flags: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    owner_id: Mapped[UUID_t | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    team_id: Mapped[UUID_t | None] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
     )
     created_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
+    owner: Mapped["User" | None] = relationship("User", back_populates="deals_owned")
+    team: Mapped["Team" | None] = relationship("Team", back_populates="deals")
     documents: Mapped[list["Document"]] = relationship("Document", back_populates="deal", cascade="all, delete-orphan")
+    listings: Mapped[list["Listing"]] = relationship("Listing", back_populates="deal", cascade="all, delete-orphan")
     embeddings: Mapped[list["Embedding"]] = relationship(
         "Embedding", back_populates="deal", cascade="all, delete-orphan"
     )
+    runs: Mapped[list["Run"]] = relationship("Run", back_populates="deal", cascade="all, delete-orphan")
 
 
 class Document(Base):
@@ -61,6 +68,7 @@ class Document(Base):
     file_extension: Mapped[str | None] = mapped_column(String(20), nullable=True)
     file_data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    checksum: Mapped[str | None] = mapped_column(String(128), nullable=True)
     processing_status: Mapped[str] = mapped_column(String(50), nullable=False, default="uploaded")
     processing_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     converted_formats: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
@@ -68,6 +76,14 @@ class Document(Base):
     embeddings_created: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     text_chunks_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    native_token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    summary_token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    summary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_summarized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_too_large: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pdf_page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    use_summary_for_generation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     google_doc_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     converted_pdf_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     converted_text_url: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -86,6 +102,9 @@ class Document(Base):
     deal: Mapped[Deal] = relationship("Deal", back_populates="documents")
     embeddings: Mapped[list["Embedding"]] = relationship(
         "Embedding", back_populates="document", cascade="all, delete-orphan"
+    )
+    ingestion_jobs: Mapped[list["DocumentIngestionJob"]] = relationship(
+        "DocumentIngestionJob", back_populates="document", cascade="all, delete-orphan"
     )
 
 
@@ -124,6 +143,66 @@ class Embedding(Base):
 
     deal: Mapped[Deal] = relationship("Deal", back_populates="embeddings")
     document: Mapped[Document] = relationship("Document", back_populates="embeddings")
+
+
+class DocumentIngestionJob(Base):
+    __tablename__ = "document_ingestion_jobs"
+
+    id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    deal_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False)
+    document_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    deal: Mapped[Deal] = relationship("Deal")
+    document: Mapped[Document] = relationship("Document", back_populates="ingestion_jobs")
+
+
+class Listing(Base):
+    __tablename__ = "listings"
+
+    id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    deal_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
+    hero_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requires_nda: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    metadata: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    deal: Mapped[Deal] = relationship("Deal", back_populates="listings")
+    access_requests: Mapped[list["ListingAccessRequest"]] = relationship(
+        "ListingAccessRequest", back_populates="listing", cascade="all, delete-orphan"
+    )
+
+
+class ListingAccessRequest(Base):
+    __tablename__ = "listing_access_requests"
+
+    id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    listing_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("listings.id", ondelete="CASCADE"), nullable=False)
+    full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    company: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_by: Mapped[UUID_t | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    listing: Mapped[Listing] = relationship("Listing", back_populates="access_requests")
+    reviewer: Mapped["User" | None] = relationship("User", back_populates="reviewed_access_requests")
 
 
 class ProcessingLog(Base):
@@ -198,8 +277,8 @@ class User(Base):
     )
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    owned_projects: Mapped[list["Project"]] = relationship(
-        "Project",
+    deals_owned: Mapped[list["Deal"]] = relationship(
+        "Deal",
         back_populates="owner",
     )
     owned_teams: Mapped[list["Team"]] = relationship(
@@ -210,6 +289,10 @@ class User(Base):
         "TeamMember",
         back_populates="user",
         cascade="all, delete-orphan",
+    )
+    reviewed_access_requests: Mapped[list["ListingAccessRequest"]] = relationship(
+        "ListingAccessRequest",
+        back_populates="reviewer",
     )
 
 
@@ -230,7 +313,7 @@ class Team(Base):
         back_populates="team",
         cascade="all, delete-orphan",
     )
-    projects: Mapped[list["Project"]] = relationship("Project", back_populates="team")
+    deals: Mapped[list["Deal"]] = relationship("Deal", back_populates="team")
 
 
 class TeamMember(Base):
@@ -249,66 +332,11 @@ class TeamMember(Base):
     user: Mapped[User] = relationship("User", back_populates="team_memberships")
 
 
-class Project(Base):
-    __tablename__ = "projects"
-
-    id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    name: Mapped[str] = mapped_column(String(200), nullable=False)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    flags: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    owner_id: Mapped[UUID_t | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
-    team_id: Mapped[UUID_t | None] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
-    )
-
-    owner: Mapped[User | None] = relationship("User", back_populates="owned_projects")
-    team: Mapped[Team | None] = relationship("Team", back_populates="projects")
-    files: Mapped[list["ProjectFile"]] = relationship(
-        "ProjectFile",
-        back_populates="project",
-        cascade="all, delete-orphan",
-    )
-    runs: Mapped[list["Run"]] = relationship(
-        "Run",
-        back_populates="project",
-        cascade="all, delete-orphan",
-    )
-
-
-class ProjectFile(Base):
-    __tablename__ = "project_files"
-
-    id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    project_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
-    filename: Mapped[str] = mapped_column(String(500), nullable=False)
-    path: Mapped[str] = mapped_column(String(1000), nullable=False)
-    size: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    media_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    checksum: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    native_token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    summary_token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    is_summarized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    summary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    is_too_large: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    pdf_page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    use_summary_for_generation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    summary_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
-    )
-
-    project: Mapped[Project] = relationship("Project", back_populates="files")
-
-
 class Run(Base):
     __tablename__ = "runs"
 
     id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    project_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    deal_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
     mode: Mapped[str] = mapped_column(String(20), nullable=False, default="full")
     research_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="none")
@@ -323,7 +351,7 @@ class Run(Base):
     parent_run_id: Mapped[UUID_t | None] = mapped_column(UUID(as_uuid=True), ForeignKey("runs.id"), nullable=True)
     extracted_variables_artifact_id: Mapped[UUID_t | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
-    project: Mapped[Project] = relationship("Project", back_populates="runs")
+    deal: Mapped[Deal] = relationship("Deal", back_populates="runs")
     parent_run: Mapped["Run" | None] = relationship("Run", remote_side=[id], uselist=False)
     steps: Mapped[list["RunStep"]] = relationship("RunStep", back_populates="run", cascade="all, delete-orphan")
     artifacts: Mapped[list["Artifact"]] = relationship("Artifact", back_populates="run", cascade="all, delete-orphan")

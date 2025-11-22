@@ -2,19 +2,19 @@
 
 ## 1. Backend Surface Snapshot (Nov 22, 2025)
 
-**Status:** ✅ Router registration + cookie sessions landed · ⚠️ Persistent migrations/RBAC still pending
+**Status:** ✅ Router registration + cookie sessions landed · ⚠️ Async ingestion + RBAC still pending
 
-FastAPI now mounts every router plus the in-memory job registry/vector-store wiring. Auth flows are backed by the local session service until we finish wiring the database tables and RBAC policies.
+FastAPI now mounts every router plus the in-memory job registry/vector-store wiring. Auth flows are backed by the local session service until we finish wiring the database tables and RBAC policies. Everything talks to the local Postgres instance (no Supabase dependencies remain).
 
 ```11:68:server/api.py
 from server.routes import (
     artifacts_router,
     auth_router,
+    deals_router,
+    deal_runs_router,
     embeddings_router,
     files_router,
     om_router,
-    project_runs_router,
-    projects_router,
     runs_router,
     system_router,
     teams_router,
@@ -27,7 +27,7 @@ def create_app() -> FastAPI:
     app.state.job_registry = JobRegistry(max_workers=2, vector_store=vector_store)
     app.include_router(system_router)
     app.include_router(auth_router)
-    app.include_router(projects_router)
+    app.include_router(deals_router)
     ...
     app.include_router(om_router)
 ```
@@ -37,15 +37,17 @@ def create_app() -> FastAPI:
 | Endpoint group | Description | Status |
 | --- | --- | --- |
 | `/auth/*` | Cookie-based `register`, `login`, `logout`, `me` backed by `SessionService`. | **Beta** – needs RBAC + password policies. |
-| `/projects/*`, `/projects/{id}/files`, `/projects/{id}/runs` | CRUD around projects, uploads, and run orchestration via the job registry. | **Beta** – models exist but migrations are outstanding. |
-| `/runs/*`, `/artifacts/*`, `/projects/{id}/embeddings` | Run history, artifact listings/downloads, manual embedding creation. | **Beta** – storage adapters wired, needs auth checks. |
+| `/deals/*` | Admin CRUD for deals (formerly “projects”), including team assignment and flags. | **Beta** – migrations/seed data outstanding. |
+| `/deals/{id}/documents` | Uploads (txt/md/rst, pdf, doc/docx, ppt/pptx, common images), synchronous extraction + embeddings, summarize/toggle, delete. | **Beta** – async job queue still pending. |
+| `/deals/{id}/runs`, `/runs/*`, `/deals/{id}/runs/{run_id}/artifacts`, `/deals/{id}/embeddings` | Run orchestration, artifact download, manual embedding creation. | **Beta** – needs auth checks + UI. |
+| `/deals/{id}/oms`, `/deals/{id}/oms/{run_id}/download/{format}` | Lists successful runs and provides Markdown/DOCX downloads without artifact hunting. | **Beta** – format options `md` or `docx`. |
 | `/api/deals`, `/api/om/generate` | Legacy inline ingestion + OM generation. | **Legacy** – still synchronous and blocks worker threads. |
 
 ```89:205:server/routes/om.py
 @router.post("/deals", response_model=DealImportResponse, status_code=status.HTTP_201_CREATED)
 async def import_deal(...):
     ...
-    VECTOR_STORE.insert_embedding(...)
+        VECTOR_STORE.insert_embedding(...)
 
 @router.post("/om/generate", response_model=OMGenerateResponse)
 def generate_om(...):
@@ -57,30 +59,31 @@ def generate_om(...):
 
 ### Data models
 
-The ORM now covers the platform scaffolding we need to replace Supabase: `users`, `teams`, `team_members`, `projects`, `project_files`, `runs`, `run_steps`, `artifacts`, plus the existing `deals/documents/embeddings` tables.
+We are collapsing “projects” and “deals” into a single entity so there is one canonical record per opportunity. Documents/files, runs, and artifacts all hang off that unified table. Teams and RBAC will key off the merged entity as well so there is no duplicate ownership model to keep in sync.
 
-```31:330:server/db/models.py
-class User(Base):
-    email = mapped_column(String(320), unique=True, nullable=False, index=True)
-    role = mapped_column(String(50), default="member")
-    owned_projects = relationship("Project", back_populates="owner")
+```31:220:server/db/models.py
+class Deal(Base):
+    id = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    company_name = mapped_column(String(255), nullable=False)
+    team_id = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=True)
+    documents = relationship("Document", back_populates="deal", cascade="all, delete-orphan")
+    runs = relationship("Run", back_populates="deal", cascade="all, delete-orphan")
 
-class Project(Base):
-    name = mapped_column(String(200), nullable=False)
-    files = relationship("ProjectFile", back_populates="project", cascade="all, delete-orphan")
-    runs = relationship("Run", back_populates="project", cascade="all, delete-orphan")
+class Document(Base):
+    deal_id = mapped_column(UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False)
+    file_path = mapped_column(Text, nullable=True)
+    embeddings = relationship("Embedding", back_populates="document", cascade="all, delete-orphan")
 
 class Run(Base):
-    status = mapped_column(String(50), default="pending")
+    deal_id = mapped_column(UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False)
     artifacts = relationship("Artifact", back_populates="run", cascade="all, delete-orphan")
 ```
 
 ### Observations & gaps
 
-1. **Migrations + seed data** are not generated yet, so the new tables exist only in ORM form.
-2. **RBAC/authz**: `/auth` issues sessions but routers do not yet enforce role-based access or tenancy filters.
-3. **Ingestion/jobs** still run inline inside `/api/deals`; we need the background worker plus status endpoints.
-4. **Artifact delivery** is wired, but OM generation still writes to disk without exposing `/deals/{id}/oms` convenience endpoints.
+1. **RBAC/authz**: `/auth` issues sessions but routers do not yet enforce role-based access or tenancy filters. With deals now canonical, each route needs to scope by `deal.team_id` or owner.
+2. **Async ingestion/jobs**: `/deals/{id}/documents` currently runs extraction/chunking inline. We still need a background worker + status polling so uploads return quickly and heavy formats (PDF, PPTX, images) don’t block the request.
+3. **OM outputs**: Runs expose artifacts by run ID, but there’s no `/deals/{id}/oms` endpoint to list/download Markdown/DOCX per deal.
 
 ## 2. Frontend Status After Supabase Prune
 
@@ -102,22 +105,14 @@ Reintroducing listings, admin flows, and automations will happen page-by-page on
 
 ### Document ingestion
 
-| Capability | FastAPI (`/api/deals`) | n8n `[DEV in DEV] Company/Deal Data Processing/Import` |
+We are replacing the legacy n8n flow with a native ingestion pipeline that accepts a curated list of formats and always emits embeddings tied back to the source deal/file.
+
+| Requirement | FastAPI (target) | Notes |
 | --- | --- | --- |
-| File persistence | Writes each upload to a local `inputs_dir` and records a `documents` row. | Creates the deal, writes binaries to disk, and records detailed metadata per document, including workflow IDs. |
-| Format handling | Relies on `extract_text` plus Gemini fallbacks for PDFs/images. Limited insight into PPTX, XLSX, CSV. | Uses a Switch node to branch per extension, then dedicated converters (Excel, PDF, PowerPoint, DOCX, CSV) to extract text and images before chunking. |
-| Chunking/embed | Inline chunking with fixed strategy and immediate pgvector insert. | Separate nodes chunk the cleaned text, then run embeddings per chunk to store with metadata and stats, updating `documents.processing_status` asynchronously. |
-| Status/telemetry | Returns a summary in the HTTP response only. | Updates `documents` rows, writes processing logs/stats, and stores workflow IDs for auditing. |
-
-```63:399:[DEV in DEV] Company_Deal Data Processing_Import.json
-"Add to Deals Table/Get Deal ID" -> INSERT INTO deals (...)
-"Save Files to Disk" -> writes uploaded binaries to target_dir
-"Switch" -> routes XLSX/PDF/PPTX/DOCX/CSV/TXT to dedicated Code nodes
-"Chunk the text" -> emits chunk_index/chunk_text for embeddings
-"Update Doc Row" -> SET processing_status = 'completed', processed_at = now()
-```
-
-FastAPI lacks converters for PPTX/XLSX/CSV, has no structured logging, and cannot be polled for document states.
+| Accepted formats | Text-like (`txt`, `md`, `rst`, etc.), `pdf`, `doc/docx`, `ppt/pptx`, and common image formats. | We intentionally drop XLS/XLSX/CSV for now; those can be re-added once we have parity. |
+| Extraction | Always extract raw text. If a PDF yields zero text on the first pass, trigger a fallback OCR/renderer step before marking the file as failed. | This captures the “side step” mentioned in the new requirements. |
+| Chunking/embedding | Chunk every successfully extracted file, store embeddings with references to the originating deal + document, and keep token counts/metadata for downstream auditing. | Embeddings should use the same OpenAI/Gemini strategy the OM generator expects. |
+| Telemetry | Update `documents.processing_status`, `processed_at`, `text_chunks_count`, and store error messages in the DB so the admin UI can poll. | Replace the old inline-only summary. |
 
 ### OM generation
 
@@ -141,24 +136,26 @@ N8n already encodes multi-step orchestration and templating, which the FastAPI s
 
 ## 4. Backend Enhancements Required for the Frontend
 
-1. **Platform scaffolding**: Introduce authentication/session middleware, expose the dormant routers (`projects`, `files`, `runs`, `teams`, `artifacts`, `system`), and add RBAC hooks so admin/editor dashboards can rely on the API instead of Supabase auth.
-2. **Deal & listing APIs**: Build REST endpoints for listing CRUD, deal status transitions, NDA/access-request workflows, and ChipFoundry-specific automations. These should map to the Supabase tables (`listings`, `access_requests`, `listing_prospects`, `user_roles`, etc.) that the frontend currently depends on.
-3. **Async ingestion service**: Move file conversion, chunking, and embedding into a background worker (Celery, Dramatiq, or FastAPI background tasks + job registry). Mirror the per-format processing n8n performs so XLSX/PPTX/CSV/TXT uploads behave identically, persist processing logs, and expose job status endpoints.
-4. **Artifact & run management**: Store generated Markdown/DOCX artifacts in an object store (S3, Supabase storage, etc.) and expose download endpoints, run histories, and ability to re-run generation with different templates or section configs.
-5. **Email automation & outreach**: Model sequences, enrollments, interactions, and DNS verification states; provide endpoints for the Listing Settings and Prospects screens, replacing Supabase functions (`scrape-website`, `search-trademarks`, `validate-dns`) with FastAPI services or background jobs.
-6. **Shared types/SDK**: Publish a lightweight client (e.g., generated from FastAPI’s OpenAPI schema) so the React app can share DTOs with the backend instead of duplicating validation logic.
-7. **Leverage existing Postgres**: Reuse and extend the local Postgres instance that already powers n8n and the current workflows. The `vectordb_schema.sql` dump shows the existing `deals`, `documents`, `embeddings`, `processing_logs`, `processing_stats`, and trigger infrastructure (pgvector, pgcrypto, uuid-ossp) that we should migrate in-place rather than standing up a new database.
+1. **Platform scaffolding**: Introduce authentication/session middleware, expose the dormant routers (now refocused around deals/files/runs/teams/artifacts/system), and add RBAC hooks so admin/editor dashboards can rely on the API instead of Supabase auth.
+2. **Deal & listing APIs**: Build REST endpoints for listing CRUD, deal status transitions, NDA/access-request workflows, and ChipFoundry-specific automations. These should map to the Supabase tables (`listings`, `access_requests`, `listing_prospects`, `user_roles`, etc.) that the frontend currently depends on, but all key data now centers on the `deals` table.
+3. **Async ingestion service**: Replace inline ingestion with the curated pipeline described above (txt/md/pdf/doc/ppt/img). Persist job status so the admin UI can poll progress per document.
+4. **Artifact & run management**: Keep the “runs on deals” concept—each deal can have multiple generation attempts, artifacts, and quick-regens. Provide `/deals/{id}/runs` APIs plus download endpoints so the admin can re-run generation with different templates.
+5. **Admin control surface**: Ship a first-party admin page where editors can create deals, upload documents, monitor ingestion progress, and trigger runs. This replaces the huge Supabase form and becomes the orchestration center for doc ingestion.
+6. **Email automation & outreach**: Model sequences, enrollments, interactions, and DNS verification states; provide endpoints for the Listing Settings and Prospects screens, replacing Supabase functions (`scrape-website`, `search-trademarks`, `validate-dns`) with FastAPI services or background jobs.
+7. **Shared types/SDK**: Publish a lightweight client (e.g., generated from FastAPI’s OpenAPI schema) so the React app can share DTOs with the backend instead of duplicating validation logic.
+8. **Leverage existing Postgres**: Reuse and extend the local Postgres instance that already powers n8n and the current workflows. The `vectordb_schema.sql` dump shows the existing `deals`, `documents`, `embeddings`, `processing_logs`, `processing_stats`, and trigger infrastructure (pgvector, pgcrypto, uuid-ossp) that we should migrate in-place rather than standing up a new database.
 
 ## 5. Frontend Restructure + Feature Removals
 
 ### Migration strategy
 
 - [x] **Thin Supabase UI (Nov 22)**: delete the legacy pages/components/hooks and reduce the bundle to a roadmap landing page.
-- [ ] **Introduce `useOmApi()` + shared DTOs**: once FastAPI publishes the OpenAPI spec, scaffold a typed client in `frontend/src/lib/api-types.ts`.
-- [ ] **Modularize admin flows**: rebuild the former `AdminCreate` experience across `/deals`, `/documents`, `/metadata`, `/assets` endpoints.
-- [ ] **Server-side storage + workers**: swap direct uploads/functions invocations for backend-managed presigned uploads and job tickets.
+- [x] **Introduce typed API helpers (Nov 22)**: `/frontend/src/lib/apiClient.ts` centralizes fetch wrappers + DTOs so React pages stop duplicating request logic.
+- [ ] **Expand admin flows**: finish the metadata/automation/prospect screens once the backend APIs exist.
+- [x] **Server-side storage + ingestion (Nov 22)**: uploads now land in FastAPI, get chunked/embedded, and sync metadata into Postgres/pgvector. An async worker is still a follow-up once we add queueing.
 - [x] **Retire Supabase auth (Nov 22)**: removed the Supabase client, hooks, env vars, and UI; `/auth` now documents the FastAPI plan.
 - [ ] **Edge-function parity**: replace `scrape-website`, `search-trademarks`, and `validate-dns` with FastAPI services before re-adding UI triggers.
+- [x] **Admin dashboard baseline (Nov 22)**: `/admin` now lists deals, uploads docs, and triggers runs against the new endpoints.
 
 ### Features to trim or defer
 
@@ -174,17 +171,29 @@ Documenting explicit removals keeps the React bundle lean while we rebuild aroun
 ## 6. Recommended Next Steps
 
 - [x] **Stabilize backend surface (Nov 21)** – Routers + session middleware are live; next deliverable is an exported OpenAPI spec + SDK.
-- [ ] **Implement document ingestion jobs** – Port XLSX/PPTX/CSV converters, persist job records, and expose `/deals/{id}/documents` polling endpoints.
-- [ ] **Model listings/access requests** – Wire FastAPI to the listings/access tables so we can rebuild the marketplace flows.
-- [ ] **Expose OM artifact APIs** – Publish `/deals/{id}/oms` for listing generated Markdown/DOCX + download URLs.
-- [ ] **Front-end adapter layer** – Generate shared DTOs/hooks so new React pages talk to FastAPI instead of Supabase.
-- [ ] **Retire Supabase features iteratively** – Reintroduce AdminCreate/Settings/Prospects once the equivalent backend endpoints exist (in progress via placeholder UI).
+- [x] **Implement document ingestion jobs (Nov 22)** – Uploads now enqueue a background worker that extracts/chunks/embeds and updates document/job telemetry for polling.
+- [x] **Expose OM artifact APIs (Nov 22)** – `/deals/{id}/oms` lists successes and offers Markdown/DOCX downloads tied to each run.
+- [x] **Typed API helpers (Nov 22)** – Added `frontend/src/lib/apiClient.ts` and hooked `/admin` into it so future pages can share DTOs.
+- [x] **RBAC enforcement (Nov 22)** – Added role-aware dependencies + per-deal guards so only owners/teams/admins can view or mutate deals, docs, runs, artifacts, and embeddings.
+- [x] **Listings/access requests (Nov 22)** – Modeled listings + access workflows in FastAPI to replace the Supabase tables.
+- [ ] **Edge-function parity & Supabase retirements** – Reintroduce AdminCreate/Settings/Prospects only after the new APIs land; no urgency until the base pipeline ships.
+
+### Async ingestion design sketch
+
+| Concern | Plan |
+| --- | --- |
+| Job tracking | Add `document_ingestion_jobs` table with `id`, `deal_id`, `document_id`, `status` (`queued` → `processing` → `succeeded/failed`), worker notes, token counts, and timestamps. |
+| API contract | Keep `POST /deals/{id}/documents` synchronous for upload/storage, but immediately enqueue each file. Expose `GET /deals/{id}/documents?status=...` plus `GET /documents/{doc_id}/jobs` so the admin UI can poll without re-uploading. |
+| Worker topology | Reuse the existing `JobRegistry` pattern: a lightweight queue table + in-memory executor that pulls pending jobs, calls the ingester (text extraction, OCR fallback, chunk/embedding), and updates both `documents` and the new job record atomically. |
+| Heavy formats | Split the ingestion steps into adapters (text-like, PDF, Office, images). PDFs that produce zero text go through OCR (Poppler + Tesseract) before marking the job failed. Images pipe through the existing Gemini-based captioner. |
+| Telemetry | Persist `processing_status`, `processed_at`, `text_chunks_count`, token counts, and any `processing_error` on both `documents` and `document_ingestion_jobs`. The admin page reads these fields to show progress bars. |
+| Cleanup/retries | Failed jobs stay in the queue with the error string. Provide `POST /documents/{doc_id}/jobs/retry` so admins can requeue after fixing source issues. |
 
 ## 7. Alignment Note & Current State
 
-- **Current alignment**: The backend now exposes auth/projects/files/runs/artifacts in addition to the legacy `/api` routes, but ingestion jobs, listings APIs, and migrations remain on the backlog. The frontend has been intentionally reduced to roadmap placeholders so nobody expects Supabase-era functionality to work.
+- **Current alignment**: The backend now exposes auth/deals/documents/runs/artifacts plus the new ingestion worker and listings/access APIs; remaining work is hardening RBAC (seeding, audit logging) and replacing the final Supabase automations. The frontend has been intentionally reduced to roadmap placeholders so nobody expects Supabase-era functionality to work.
 - **Goal alignment**: Converge on FastAPI + local Postgres for *all* services—auth, listings, document ingestion, OM generation, automation—and expose those capabilities through a single API + generated client the React app consumes.
-- **Execution focus**: Finish database migrations + document ingestion jobs, then rebuild the key pages (listings, dashboard, admin) on top of the new API using shared DTOs and RBAC-aware hooks.
+- **Execution focus**: Seed RBAC data, wire the listings/access flows into the frontend, and continue rebuilding the key pages (dashboard, admin automations) on top of the new API using the shared DTOs + role-aware hooks.
 
 Delivering this plan will give the React app a single source of truth (the FastAPI service) and eliminate the mismatch between the legacy n8n pipelines and today’s thin API.
 
@@ -193,7 +202,15 @@ Delivering this plan will give the React app a single source of truth (the FastA
 
 - **Auth & sessions**: Added a cookie-based `/auth` surface (`register`, `login`, `logout`, `me`) using the existing password + session services so React can start migrating away from Supabase Auth. The new `SessionUser` dependency powers the `projects` and `teams` routers.
 - **ORM coverage**: Extended `server/db/models.py` with `users`, `teams`, `team_members`, `projects`, `project_files`, `runs`, `run_steps`, and `artifacts`, giving parity with the data the React app expects (upload metadata, run history, team membership, etc.). These models mirror the schema we’ll migrate into Postgres next.
-- **Router activation**: FastAPI now mounts the previously dormant routers (`/system`, `/projects`, `/teams`, `/projects/{id}/files`, `/projects/{id}/runs`, `/runs`, `/artifacts`, `/projects/{id}/embeddings`) alongside the existing `/api` OM routes. The application factory also instantiates the vector store + job registry and exposes them via `app.state`, so run orchestration and embedding endpoints can execute.
+- **Router activation**: FastAPI now mounts the rebuilt routers (`/system`, `/deals`, `/teams`, `/deals/{id}/documents`, `/deals/{id}/runs`, `/runs`, `/deals/{id}/runs/{run_id}/artifacts`, `/deals/{id}/embeddings`) alongside the existing `/api` OM routes. The application factory also instantiates the vector store + job registry and exposes them via `app.state`, so run orchestration and embedding endpoints can execute.
 - **Frontend cleanup**: Deleted all Supabase-dependent components, hooks, utilities, functions, and assets; trimmed the router to `/`, `/auth`, and `*`; and reduced npm dependencies to `react`, `react-dom`, and `react-router-dom` for a clean rebuild baseline.
+- **Schema migration**: Added `server/db/migrations/202511210001_merge_deals_projects.sql` to drop the placeholder `projects/project_files` tables, extend `deals` with owner/team metadata, extend `documents` with checksum/token/summary fields, and repoint `runs` to `deal_id`.
+- **Document ingestion pipeline**: `/deals/{id}/documents` now stores uploads under the FastAPI data root, extracts text (with PDF fallback), chunks/embeds every document into pgvector, and updates telemetry so the admin screen can poll status.
+- **Ingestion worker queue**: Added `document_ingestion_jobs` plus a background `DocumentIngestionService` so uploads return immediately while a worker handles extraction/chunking/embeddings.
+- **Admin UI baseline**: A new `/admin` page lets operators create deals, upload documents, trigger `/deals/{id}/runs`, and download DOCX/artifacts without relying on Supabase.
+- **OM outputs API**: Added `/deals/{id}/oms` + `/deals/{id}/oms/{run_id}/download/{format}` so the frontend can list every successful run and download Markdown/DOCX directly.
+- **Typed API helpers**: Introduced `frontend/src/lib/apiClient.ts` plus a React session provider so the admin page calls FastAPI through shared DTOs/hooks instead of ad hoc `fetch` calls.
+- **RBAC + access guards**: Added `require_roles()` dependencies and per-deal enforcement helpers so every deal/document/run/artifact route respects ownership + team membership.
+- **Listings + access requests**: New ORM/migrations + `/listings/*` endpoints mirror the Supabase tables so marketplace/admin flows can be rebuilt without Supabase.
 
-**Open follow-ups**: generate migrations for the new tables, wire RLS/RBAC on the new models, deliver document ingestion jobs, and rebuild the frontend features on top of the FastAPI API + shared types.
+**Open follow-ups**: seed initial RBAC users/teams, wire the new listings/access APIs into the frontend, and continue replacing legacy Supabase edge functions feature-by-feature.

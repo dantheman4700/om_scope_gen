@@ -43,7 +43,7 @@ class JobState(str):
 @dataclass
 class RunOptions:
     interactive: bool = False
-    project_identifier: Optional[str] = None
+    deal_identifier: Optional[str] = None
     run_mode: str = "full"
     research_mode: str = ResearchMode.NONE.value
     instructions_override: Optional[str] = None
@@ -56,7 +56,7 @@ class RunOptions:
     def to_dict(self) -> dict:
         return {
             "interactive": self.interactive,
-            "project_identifier": self.project_identifier,
+            "deal_identifier": self.deal_identifier,
             "run_mode": self.run_mode,
             "research_mode": self.research_mode,
             "instructions_override": self.instructions_override,
@@ -71,7 +71,7 @@ class RunOptions:
 @dataclass
 class JobStatus:
     id: UUID
-    project_id: str
+    deal_id: str
     run_mode: str
     research_mode: str
     status: str = JobState.PENDING
@@ -85,7 +85,7 @@ class JobStatus:
     def to_dict(self) -> dict:
         return {
             "id": self.id,
-            "project_id": self.project_id,
+            "deal_id": self.deal_id,
             "status": self.status,
             "run_mode": self.run_mode,
             "research_mode": self.research_mode,
@@ -110,11 +110,11 @@ class JobRegistry:
         self._storage = get_storage()
         self._use_remote_storage = STORAGE_PROVIDER == "supabase"
 
-    def create_job(self, project_id: str, options: RunOptions) -> JobStatus:
+    def create_job(self, deal_id: str, options: RunOptions) -> JobStatus:
         job_id = uuid4()
         job = JobStatus(
             id=job_id,
-            project_id=project_id,
+            deal_id=deal_id,
             run_mode=options.run_mode,
             research_mode=options.research_mode,
             params=options.to_dict(),
@@ -127,11 +127,11 @@ class JobRegistry:
         self._executor.submit(self._execute_job, job_id, options)
         return job
 
-    def list_jobs(self, project_id: Optional[str] = None) -> list[JobStatus]:
+    def list_jobs(self, deal_id: Optional[str] = None) -> list[JobStatus]:
         with self._lock:
             jobs = list(self._jobs.values())
-        if project_id is not None:
-            jobs = [job for job in jobs if job.project_id == project_id]
+        if deal_id is not None:
+            jobs = [job for job in jobs if job.deal_id == deal_id]
         return jobs
 
     def get_job(self, job_id: UUID) -> Optional[JobStatus]:
@@ -144,7 +144,7 @@ class JobRegistry:
             if run_record is None:
                 run_record = models.Run(
                     id=job.id,
-                    project_id=job.project_id,
+                    deal_id=job.deal_id,
                 )
                 session.add(run_record)
 
@@ -171,14 +171,14 @@ class JobRegistry:
         if job is None:
             return
 
-        paths = ensure_project_structure(DATA_ROOT, job.project_id)
+        paths = ensure_project_structure(DATA_ROOT, job.deal_id)
         run_dir = paths.runs_dir / str(job.id)
         run_dir.mkdir(parents=True, exist_ok=True)
 
         sync_step_id = self._start_run_step(job.id, "sync inputs")
         try:
             sync_errors, sync_warnings = self._prepare_workspace(
-                job.project_id,
+                job.deal_id,
                 paths,
                 included_ids=options.included_file_ids,
             )
@@ -242,7 +242,7 @@ class JobRegistry:
             else:
                 result_path = generator.generate(
                     interactive=options.interactive,
-                    project_identifier=options.project_identifier,
+                    project_identifier=options.deal_identifier,
                     smart_ingest=True,
                     context_notes_path=None,
                     date_override=None,
@@ -254,10 +254,10 @@ class JobRegistry:
                 )
             result_rel = self._relative_to_project(paths.root, result_path)
             if self._use_remote_storage and result_rel:
-                self._upload_to_storage(job.project_id, paths.root / Path(result_rel))
+                self._upload_to_storage(job.deal_id, paths.root / Path(result_rel))
             self._mark_success(job, result_rel)
             self._update_run(job.id, status=JobState.SUCCESS, finished_at=datetime.utcnow(), result_path=result_rel)
-            artifact_ids = self._record_artifacts(job.id, job.project_id, paths, result_rel)
+            artifact_ids = self._record_artifacts(job.id, job.deal_id, paths, result_rel)
             variables_artifact_id = artifact_ids.get("variables")
             if variables_artifact_id:
                 self._update_run(job.id, extracted_variables_artifact_id=variables_artifact_id)
@@ -342,8 +342,8 @@ class JobRegistry:
             parent_run = session.get(models.Run, parent_uuid)
             if parent_run is None:
                 raise ValueError("Parent run not found")
-            if str(parent_run.project_id) != job.project_id:
-                raise ValueError("Parent run belongs to a different project")
+            if str(parent_run.deal_id) != job.deal_id:
+                raise ValueError("Parent run belongs to a different deal")
             if parent_run.status != JobState.SUCCESS:
                 raise ValueError("Parent run must be successful for quick regeneration")
 
@@ -363,7 +363,7 @@ class JobRegistry:
         artifact_path = (paths.root / Path(variables_artifact.path)).resolve()
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         if not artifact_path.exists() and self._use_remote_storage:
-            key = self._storage_key(job.project_id, variables_artifact.path)
+            key = self._storage_key(job.deal_id, variables_artifact.path)
             self._storage.download_to_path(key, artifact_path)
 
         if not artifact_path.exists():
@@ -417,7 +417,7 @@ class JobRegistry:
     def _record_artifacts(
         self,
         run_id: UUID,
-        project_id: str,
+        deal_id: str,
         paths,
         result_rel: Optional[str],
     ) -> Dict[str, UUID]:
@@ -451,7 +451,7 @@ class JobRegistry:
                 except ValueError:
                     relative = str(abs_path)
                 if self._use_remote_storage:
-                    self._upload_to_storage(project_id, abs_path)
+                    self._upload_to_storage(deal_id, abs_path)
                 artifact = models.Artifact(
                     run_id=run_id,
                     kind=kind,
@@ -493,58 +493,54 @@ class JobRegistry:
     # ------------------------------------------------------------------
     def _prepare_workspace(
         self,
-        project_id: str,
+        deal_id: str,
         paths,
         *,
         included_ids: Optional[List[str]] = None,
     ) -> Tuple[List[str], List[str]]:
         self._clear_directory(paths.input_dir)
         try:
-            project_uuid = UUID(project_id)
+            deal_uuid = UUID(deal_id)
         except ValueError as exc:
-            raise ValueError(f"Invalid project id '{project_id}': {exc}")
+            raise ValueError(f"Invalid deal id '{deal_id}': {exc}")
 
         warnings: List[str] = []
         errors: List[str] = []
         with get_session() as session:
-            query = (
-                session.query(models.ProjectFile)
-                .filter(models.ProjectFile.project_id == project_uuid)
-            )
+            query = session.query(models.Document).filter(models.Document.deal_id == deal_uuid)
             if included_ids:
                 try:
                     uuid_list = [UUID(fid) for fid in included_ids]
                 except Exception:
                     uuid_list = []
                 if uuid_list:
-                    query = query.filter(models.ProjectFile.id.in_(uuid_list))
-            files = query.all()
-        for record in files:
-            target = paths.root / record.path
+                    query = query.filter(models.Document.id.in_(uuid_list))
+            documents = query.all()
+
+        for record in documents:
+            relative_path = record.file_path or f"input/{record.file_name}"
+            target = paths.root / relative_path
             target.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Check if we should use summary instead of native file
+
             if record.use_summary_for_generation and record.is_summarized and record.summary_text:
-                # Write summary text to a .summary.txt file instead of downloading native file
                 summary_target = target.parent / f"{target.name}.summary.txt"
                 try:
                     summary_target.write_text(record.summary_text, encoding="utf-8")
                     LOGGER.info(
                         "Using summary for %s (saved to %s)",
-                        record.filename,
+                        record.file_name,
                         summary_target.name,
                     )
                 except Exception as exc:
-                    errors.append(f"Failed to write summary for '{record.filename}': {exc}")
+                    errors.append(f"Failed to write summary for '{record.file_name}': {exc}")
             else:
-                # Download native file from storage
-                key = self._storage_key(project_id, record.path)
+                key = self._storage_key(deal_id, relative_path)
                 try:
                     self._storage.download_to_path(key, target)
                 except FileNotFoundError:
-                    warnings.append(f"Missing in storage: {record.path}")
+                    warnings.append(f"Missing in storage: {relative_path}")
                 except Exception as exc:
-                    errors.append(f"Failed to download '{record.path}': {exc}")
+                    errors.append(f"Failed to download '{relative_path}': {exc}")
         return errors, warnings
 
     def _clear_directory(self, path: Path) -> None:
@@ -560,33 +556,33 @@ class JobRegistry:
                 except FileNotFoundError:
                     pass
 
-    def _upload_to_storage(self, project_id: str, local_path: Path) -> None:
+    def _upload_to_storage(self, deal_id: str, local_path: Path) -> None:
         if not local_path.exists() or not local_path.is_file():
             return
         try:
-            relative = local_path.relative_to(DATA_ROOT / "projects" / project_id)
+            relative = local_path.relative_to(DATA_ROOT / "projects" / deal_id)
         except ValueError:
             relative = local_path.name
-        key = self._storage_key(project_id, str(relative))
+        key = self._storage_key(deal_id, str(relative))
         try:
             self._storage.upload_file(key, local_path)
         except Exception as exc:
             print(f"[WARN] Failed to upload '{local_path}' to storage: {exc}")
 
-    def _storage_key(self, project_id: str, relative_path: str) -> str:
+    def _storage_key(self, deal_id: str, relative_path: str) -> str:
         clean = relative_path.replace("\\", "/").lstrip("/")
-        return f"projects/{project_id}/{clean}"
+        return f"projects/{deal_id}/{clean}"
 
-    def _record_input_file(self, project_id: str, file_path: Path, media_type: str | None = None) -> None:
+    def _record_input_file(self, deal_id: str, file_path: Path, media_type: str | None = None) -> None:
         if not file_path.exists():
             return
         try:
-            project_uuid = UUID(project_id)
+            deal_uuid = UUID(deal_id)
         except ValueError:
             return
 
         try:
-            relative = file_path.relative_to(DATA_ROOT / "projects" / project_id)
+            relative = file_path.relative_to(DATA_ROOT / "projects" / deal_id)
             relative_path = relative.as_posix()
         except ValueError:
             relative_path = file_path.name
@@ -597,26 +593,26 @@ class JobRegistry:
             media_type = "application/octet-stream"
         with get_session() as session:
             record = (
-                session.query(models.ProjectFile)
+                session.query(models.Document)
                 .filter(
-                    models.ProjectFile.project_id == project_uuid,
-                    models.ProjectFile.path == relative_path,
+                    models.Document.deal_id == deal_uuid,
+                    models.Document.file_path == relative_path,
                 )
                 .one_or_none()
             )
             if record:
-                record.filename = file_path.name
-                record.size = size
-                record.media_type = media_type
+                record.file_name = file_path.name
+                record.file_size = size
+                record.mime_type = media_type
                 record.checksum = checksum
             else:
                 session.add(
-                    models.ProjectFile(
-                        project_id=project_uuid,
-                        filename=file_path.name,
-                        path=relative_path,
-                        size=size,
-                        media_type=media_type,
+                    models.Document(
+                        deal_id=deal_uuid,
+                        file_name=file_path.name,
+                        file_path=relative_path,
+                        file_size=size,
+                        mime_type=media_type,
                         checksum=checksum,
                     )
                 )

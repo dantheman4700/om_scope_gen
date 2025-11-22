@@ -6,15 +6,18 @@ from pathlib import Path
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
-from server.core.config import get_project_data_dir
+from server.core.config import HISTORY_EMBEDDING_MODEL, get_project_data_dir
 from server.core.history_profiles import ProfileEmbedder
-from server.core.config import HISTORY_EMBEDDING_MODEL
+from ..dependencies import db_session
+from ..security import rbac
+from .auth import SessionUser, require_roles
 
 
-router = APIRouter(prefix="/projects/{project_id}/embeddings", tags=["embeddings"])
+router = APIRouter(prefix="/deals/{deal_id}/embeddings", tags=["embeddings"])
 
 
 class EmbedScopeRequest(BaseModel):
@@ -34,8 +37,8 @@ class EmbedScopeResponse(BaseModel):
     doc_kind: str
 
 
-def _resolve_document(project_id: str, relative_path: str) -> Path:
-    project_dir = get_project_data_dir(project_id)
+def _resolve_document(deal_id: str, relative_path: str) -> Path:
+    project_dir = get_project_data_dir(deal_id)
     candidate = project_dir / relative_path
     if not candidate.exists():
         outputs_path = project_dir / "outputs" / relative_path
@@ -57,9 +60,11 @@ def _get_embedder() -> ProfileEmbedder:
 
 @router.post("/", response_model=EmbedScopeResponse)
 async def embed_scope_document(
-    project_id: str,
+    deal_id: str,
     payload: EmbedScopeRequest,
     request: Request,
+    db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(require_roles("editor", "admin")),
 ) -> EmbedScopeResponse:
     try:
         payload.validate()
@@ -73,7 +78,7 @@ async def embed_scope_document(
     content = payload.content
     if content is None and payload.relative_path:
         try:
-            doc_path = _resolve_document(project_id, payload.relative_path)
+            doc_path = _resolve_document(deal_id, payload.relative_path)
             content = _load_content(doc_path)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
@@ -90,11 +95,17 @@ async def embed_scope_document(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to generate embedding: {exc}")
 
     try:
+        deal_uuid = UUID(deal_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deal not found")
+    rbac.ensure_deal_access(db, current_user, deal_uuid)
+
+    try:
         embedding_id = store.upsert_embedding(
             embedding=embedding_vector,
-            project_id=None,
+            project_id=deal_uuid,
             doc_kind=payload.doc_kind,
-            metadata=payload.metadata or {"project_id": project_id, "source": payload.relative_path},
+            metadata=payload.metadata or {"deal_id": deal_id, "source": payload.relative_path},
             embedding_id=payload.embedding_id,
         )
     except Exception as exc:

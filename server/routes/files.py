@@ -1,26 +1,27 @@
-"""Project file management endpoints."""
+"""Deal document management endpoints."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Optional
 import io
 import logging
 import mimetypes
-from uuid import UUID
+from datetime import datetime
+from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
+from typing import Dict, List, Optional
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Request, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
-
 from PyPDF2 import PdfReader
 
 from ..adapters.storage import StorageBackend
+from ..core.config import DATA_ROOT
+from ..core.extraction import extract_text
 from ..core.ingest import DocumentIngester, MAX_NATIVE_PDF_BYTES, MAX_NATIVE_PDF_PAGES
 from ..core.llm import ClaudeExtractor
 from ..core.summarizer import FileSummarizer
@@ -33,33 +34,28 @@ from ..services.token_counter import (
     make_image_block,
     make_text_block,
 )
+from ..storage.projects import ensure_project_structure
+from ..security import rbac
+from .auth import SessionUser, require_roles
 
 
-router = APIRouter(prefix="/projects/{project_id}/files", tags=["files"])
+router = APIRouter(prefix="/deals/{deal_id}/documents", tags=["documents"])
 
 LOGGER = logging.getLogger(__name__)
 
 # As of Nov 2025, from https://support.anthropic.com/en/articles/8241126-what-kinds-of-documents-can-i-upload-to-claude-ai
 _SUPPORTED_DOC_EXTENSIONS = {
     ".pdf",
+    ".doc",
     ".docx",
-    ".odt",
-    ".rtf",
-    ".epub",
-    ".xlsx",
+    ".ppt",
+    ".pptx",
 }
 # These formats are treated as plain text for ingestion
 _TEXT_LIKE_EXTENSIONS = {
-    ".csv",
     ".txt",
-    ".html",
-    ".json",
-    # The following are not officially listed but are processed into text
-    # and were supported in previous versions of the application.
     ".md",
-    ".vtt",
-    ".yaml",
-    ".yml",
+    ".rst",
 }
 _SUPPORTED_IMG_EXTENSIONS = {
     ".jpeg",
@@ -74,17 +70,16 @@ SUPPORTED_EXTENSIONS = _SUPPORTED_DOC_EXTENSIONS | _TEXT_LIKE_EXTENSIONS | _SUPP
 _DOCUMENT_INGESTER = DocumentIngester()
 _FILE_SUMMARIZER: Optional[FileSummarizer] = None
 
-
-class ProjectFileResponse(BaseModel):
+class DealDocumentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    filename: str
-    size: int
-    media_type: Optional[str]
-    checksum: str
+    file_name: str
+    file_size: int
+    mime_type: Optional[str]
+    checksum: Optional[str]
     created_at: datetime
-    path: str
+    file_path: str
     token_count: int
     is_summarized: bool
     summary_text: Optional[str] = None
@@ -93,6 +88,8 @@ class ProjectFileResponse(BaseModel):
     use_summary_for_generation: bool
     native_token_count: int
     summary_token_count: int
+    processing_status: str
+    processing_error: Optional[str] = None
 
 
 async def _analyze_uploaded_file(
@@ -319,32 +316,41 @@ def _extract_text_for_summary(filename: str, contents: bytes) -> Optional[str]:
     return combined or None
 
 
-@router.get("/", response_model=List[ProjectFileResponse])
-async def list_files(project_id: UUID, db: Session = Depends(db_session)) -> List[ProjectFileResponse]:
-    project = _get_project(db, project_id)
-    files = (
-        db.query(models.ProjectFile)
-        .filter(models.ProjectFile.project_id == project.id)
-        .order_by(models.ProjectFile.created_at.desc())
+@router.get("/", response_model=List[DealDocumentResponse])
+async def list_documents(
+    deal_id: UUID,
+    db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(require_roles("viewer", "editor", "admin")),
+) -> List[DealDocumentResponse]:
+    deal = rbac.ensure_deal_access(db, current_user, deal_id)
+    documents = (
+        db.query(models.Document)
+        .filter(models.Document.deal_id == deal.id)
+        .order_by(models.Document.created_at.desc())
         .all()
     )
-    return [ProjectFileResponse.model_validate(file) for file in files]
+    return [DealDocumentResponse.model_validate(doc) for doc in documents]
 
 
-@router.post("/", response_model=List[ProjectFileResponse], status_code=status.HTTP_201_CREATED)
-async def upload_files(
-    project_id: UUID,
+@router.post("/", response_model=List[DealDocumentResponse], status_code=status.HTTP_201_CREATED)
+async def upload_documents(
+    deal_id: UUID,
     files: List[UploadFile] = File(...),
+    request: Request,
     db: Session = Depends(db_session),
     storage: StorageBackend = Depends(get_storage),
-) -> List[ProjectFileResponse]:
+    current_user: SessionUser = Depends(require_roles("editor", "admin")),
+) -> List[DealDocumentResponse]:
     if not files:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No files uploaded")
 
-    project = _get_project(db, project_id)
+    ingestion_service = _get_ingestion_service(request)
 
-    records: List[models.ProjectFile] = []
+    records: List[models.Document] = []
     storage_keys: List[str] = []
+    deal = rbac.ensure_deal_access(db, current_user, deal_id)
+    deal_paths = ensure_project_structure(DATA_ROOT, str(deal.id))
+    uploaded_payloads: List[bytes] = []
 
     try:
         for upload in files:
@@ -361,10 +367,11 @@ async def upload_files(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Uploaded file '{upload.filename}' is empty",
                 )
+            uploaded_payloads.append(contents)
 
             filename = Path(upload.filename).name
             relative_path = f"input/{filename}"
-            storage_key = _storage_key(str(project.id), relative_path)
+            storage_key = _storage_key(str(deal.id), relative_path)
 
             try:
                 await run_in_threadpool(storage.put_bytes, storage_key, contents, upload.content_type)
@@ -384,12 +391,12 @@ async def upload_files(
                 contents=contents,
             )
 
-            record = models.ProjectFile(
-                project_id=project.id,
-                filename=filename,
-                path=relative_path,
-                size=len(contents),
-                media_type=metadata["media_type"],
+            record = models.Document(
+                deal_id=deal.id,
+                file_name=filename,
+                file_path=relative_path,
+                file_size=len(contents),
+                mime_type=metadata["media_type"],
                 checksum=checksum,
                 token_count=metadata["token_count"],
                 native_token_count=metadata["native_token_count"],
@@ -399,6 +406,13 @@ async def upload_files(
                 is_too_large=metadata["is_too_large"],
                 pdf_page_count=metadata.get("pdf_page_count"),
                 use_summary_for_generation=metadata["use_summary_for_generation"],
+                file_extension=Path(filename).suffix.lstrip("."),
+                file_type=Path(filename).suffix.lstrip("."),
+                processing_status="queued",
+                processing_error=None,
+                embeddings_created=False,
+                text_extracted=False,
+                text_chunks_count=0,
             )
             db.add(record)
             records.append(record)
@@ -416,74 +430,93 @@ async def upload_files(
             detail=f"Failed to upload files: {exc}",
         ) from exc
 
+    for record, blob in zip(records, uploaded_payloads):
+        local_path = deal_paths.input_dir / record.file_name
+        try:
+            local_path.write_bytes(blob)
+        except Exception:
+            # Upload was already consumed; write from storage
+            try:
+                storage_key = _storage_key(str(deal.id), record.file_path or record.file_name)
+                await run_in_threadpool(storage.download_to_path, storage_key, local_path)
+            except Exception as exc:
+                record.processing_status = "failed"
+                record.processing_error = f"Unable to stage file for ingestion: {exc}"
+                ingestion_errors.append(record.file_name)
+                continue
+
+        ingestion_service.enqueue(deal.id, record.id)
+
+    db.commit()
     for record in records:
         db.refresh(record)
 
-    return [ProjectFileResponse.model_validate(record) for record in records]
+    return [DealDocumentResponse.model_validate(record) for record in records]
 
 
-@router.post("/{file_id}/summarize", response_model=ProjectFileResponse)
-async def summarize_file(
-    project_id: UUID,
-    file_id: UUID,
+@router.post("/{document_id}/summarize", response_model=DealDocumentResponse)
+async def summarize_document(
+    deal_id: UUID,
+    document_id: UUID,
     db: Session = Depends(db_session),
     storage: StorageBackend = Depends(get_storage),
-) -> ProjectFileResponse:
-    project = _get_project(db, project_id)
+    current_user: SessionUser = Depends(require_roles("editor", "admin")),
+) -> DealDocumentResponse:
+    deal = rbac.ensure_deal_access(db, current_user, deal_id)
     record = (
-        db.query(models.ProjectFile)
+        db.query(models.Document)
         .filter(
-            models.ProjectFile.project_id == project.id,
-            models.ProjectFile.id == file_id,
+            models.Document.deal_id == deal.id,
+            models.Document.id == document_id,
         )
         .one_or_none()
     )
 
     if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    file_ext = Path(record.filename).suffix.lower()
+    file_ext = Path(record.file_name).suffix.lower()
     if file_ext in _SUPPORTED_IMG_EXTENSIONS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Summarization is not supported for image files.",
         )
 
-    storage_key = _storage_key(str(project.id), record.path)
+    storage_key = _storage_key(str(deal.id), record.file_path or "")
 
     with TemporaryDirectory() as tmpdir:
-        destination = Path(tmpdir) / record.filename
+        destination = Path(tmpdir) / record.file_name
         try:
             await run_in_threadpool(storage.download_to_path, storage_key, destination)
             contents = destination.read_bytes()
         except Exception as exc:  # pragma: no cover - storage failure
-            LOGGER.error("Unable to download file %s for summarization: %s", record.filename, exc)
+            LOGGER.error("Unable to download file %s for summarization: %s", record.file_name, exc)
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to download file")
 
-    summary_text = await _summarize_file_contents(record.filename, contents)
+    summary_text = await _summarize_file_contents(record.file_name, contents)
     if not summary_text:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Unable to summarize file")
 
     try:
         summary_token_count = await count_tokens_for_blocks([make_text_block(summary_text)])
     except TokenCountingError as exc:
-        LOGGER.warning("Token counting (summary) failed for %s: %s", record.filename, exc)
+        LOGGER.warning("Token counting (summary) failed for %s: %s", record.file_name, exc)
         summary_token_count = max(1, len(summary_text) // 4)
 
     # If native_token_count is not set, calculate it from the original content
     if record.native_token_count == 0:
         blocks = _build_token_blocks(
-            filename=record.filename,
-            media_type=record.media_type or "",
+            filename=record.file_name,
+            media_type=record.mime_type or "",
             contents=contents,
-            suffix=Path(record.filename).suffix.lower(),
+            suffix=Path(record.file_name).suffix.lower(),
         )
         if blocks:
             try:
                 native_tokens = await count_tokens_for_blocks(blocks)
                 record.native_token_count = native_tokens
             except TokenCountingError as exc:
-                LOGGER.warning("Token counting (native) failed for %s: %s", record.filename, exc)
+                LOGGER.warning("Token counting (native) failed for %s: %s", record.file_name, exc)
                 record.native_token_count = 0  # Fallback
         else:
             record.native_token_count = 0
@@ -496,32 +529,34 @@ async def summarize_file(
     db.commit()
     db.refresh(record)
 
-    return ProjectFileResponse.model_validate(record)
+) -> DealDocumentResponse:
+    return DealDocumentResponse.model_validate(record)
 
 
-@router.patch("/{file_id}/toggle-mode", response_model=ProjectFileResponse)
-async def toggle_file_mode(
-    project_id: UUID,
-    file_id: UUID,
+@router.patch("/{document_id}/toggle-mode", response_model=DealDocumentResponse)
+async def toggle_document_mode(
+    deal_id: UUID,
+    document_id: UUID,
     db: Session = Depends(db_session),
-) -> ProjectFileResponse:
+    current_user: SessionUser = Depends(require_roles("editor", "admin")),
+) -> DealDocumentResponse:
     """Toggle between using native file or summary for scope generation.
     
     This endpoint switches the use_summary_for_generation flag and updates
     the token_count to reflect the selected mode.
     """
-    project = _get_project(db, project_id)
+    deal = rbac.ensure_deal_access(db, current_user, deal_id)
     record = (
-        db.query(models.ProjectFile)
+        db.query(models.Document)
         .filter(
-            models.ProjectFile.project_id == project.id,
-            models.ProjectFile.id == file_id,
+            models.Document.deal_id == deal.id,
+            models.Document.id == document_id,
         )
         .one_or_none()
     )
 
     if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     # Can't toggle if file is too large and has no summary
     if record.is_too_large and not record.is_summarized:
@@ -551,26 +586,27 @@ async def toggle_file_mode(
     db.commit()
     db.refresh(record)
 
-    return ProjectFileResponse.model_validate(record)
+    return DealDocumentResponse.model_validate(record)
 
 
-@router.delete("/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_file(
-    project_id: UUID,
-    file_id: UUID,
+@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(
+    deal_id: UUID,
+    document_id: UUID,
     db: Session = Depends(db_session),
     storage: StorageBackend = Depends(get_storage),
+    current_user: SessionUser = Depends(require_roles("editor", "admin")),
 ) -> None:
-    project = _get_project(db, project_id)
+    deal = rbac.ensure_deal_access(db, current_user, deal_id)
     record = (
-        db.query(models.ProjectFile)
-        .filter(models.ProjectFile.project_id == project.id, models.ProjectFile.id == file_id)
+        db.query(models.Document)
+        .filter(models.Document.deal_id == deal.id, models.Document.id == document_id)
         .one_or_none()
     )
     if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    storage_key = _storage_key(str(project.id), record.path)
+    storage_key = _storage_key(str(deal.id), record.file_path or "")
     try:
         await run_in_threadpool(storage.delete, storage_key)
     except Exception as exc:  # pragma: no cover - backend failure
@@ -580,16 +616,9 @@ async def delete_file(
     db.commit()
 
 
-def _get_project(db: Session, project_id: UUID) -> models.Project:
-    project = db.get(models.Project, project_id)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-    return project
-
-
-def _storage_key(project_id: str, relative_path: str) -> str:
+def _storage_key(deal_id: str, relative_path: str) -> str:
     clean = relative_path.lstrip("/")
-    return f"projects/{project_id}/{clean}"
+    return f"projects/{deal_id}/{clean}"
 
 
 async def _cleanup_uploaded_files(storage: StorageBackend, storage_keys: List[str]) -> None:
@@ -598,4 +627,14 @@ async def _cleanup_uploaded_files(storage: StorageBackend, storage_keys: List[st
             await run_in_threadpool(storage.delete, key)
         except Exception:  # pragma: no cover - best effort cleanup
             pass
+
+
+def _get_ingestion_service(request: Request):
+    service = getattr(request.app.state, "document_ingestion", None)
+    if service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Document ingestion service unavailable",
+        )
+    return service
 
