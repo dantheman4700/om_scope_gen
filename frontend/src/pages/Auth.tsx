@@ -15,7 +15,7 @@ const Auth = () => {
   useEffect(() => {
     if (!loading && user) {
       navigate("/admin", { replace: true });
-    }
+      }
   }, [loading, user, navigate]);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -96,10 +96,10 @@ const Auth = () => {
           <label className="flex flex-col gap-1">
             <span className="text-slate-300">Email</span>
             <input
-              type="email"
+                      type="email"
               className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-slate-100 outline-none focus:border-blue-500"
-              placeholder="you@example.com"
-              value={email}
+                      placeholder="you@example.com"
+                      value={email}
               onChange={(event) => setEmail(event.target.value)}
               autoComplete="email"
             />
@@ -109,10 +109,10 @@ const Auth = () => {
             <label className="flex flex-col gap-1">
               <span className="text-slate-300">Full name</span>
               <input
-                type="text"
+                      type="text"
                 className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-slate-100 outline-none focus:border-blue-500"
                 placeholder="Optional"
-                value={fullName}
+                      value={fullName}
                 onChange={(event) => setFullName(event.target.value)}
                 autoComplete="name"
               />
@@ -122,19 +122,19 @@ const Auth = () => {
           <label className="flex flex-col gap-1">
             <span className="text-slate-300">Password</span>
             <input
-              type="password"
+                      type="password"
               className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-slate-100 outline-none focus:border-blue-500"
               placeholder="••••••••"
-              value={password}
+                      value={password}
               onChange={(event) => setPassword(event.target.value)}
               autoComplete={mode === "login" ? "current-password" : "new-password"}
-            />
+                    />
           </label>
 
           {status && (
             <div className="rounded border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-300">
               {status}
-            </div>
+                  </div>
           )}
 
           <button
@@ -144,7 +144,7 @@ const Auth = () => {
           >
             {busy ? "Working..." : mode === "login" ? "Sign in" : "Create account"}
           </button>
-        </form>
+                </form>
 
         <p className="mt-6 text-center text-xs text-slate-500">
           Need a new account? Use the register tab. Accounts are stored in the local Postgres DB.

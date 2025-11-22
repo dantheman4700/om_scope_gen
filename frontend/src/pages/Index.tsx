@@ -24,7 +24,7 @@ const Index = () => {
           <p className="text-sm uppercase tracking-widest text-slate-400">Scope Doc Generator</p>
           <h1 className="mt-3 text-4xl font-semibold leading-tight">
             Frontend rebuild in progress
-          </h1>
+            </h1>
           <p className="mt-4 text-slate-300">
             The Supabase-era marketplace UI has been removed so we can align every page with the new
             FastAPI backend. Track status in <code className="rounded bg-slate-900 px-2 py-1 text-xs">docs/om_alignment_report.md</code>.
@@ -47,12 +47,12 @@ const Index = () => {
                   <span className="text-xs font-semibold uppercase tracking-widest text-slate-400">
                     {item.status}
                   </span>
-                </div>
+        </div>
                 <p className="mt-2 text-sm text-slate-300">{item.detail}</p>
-              </div>
+          </div>
             ))}
           </div>
-        </section>
+      </section>
 
         <section className="rounded-2xl border border-purple-500/30 bg-gradient-to-br from-purple-900/20 to-slate-900/50 p-6">
           <h2 className="text-xl font-semibold text-white">Why the reset?</h2>
@@ -65,9 +65,9 @@ const Index = () => {
             When a backend capability lands, the matching frontend surface will return with shared
             types, react-query hooks, and server-driven RBAC. Until then, this landing page is the
             single source of truth.
-          </p>
-        </section>
-      </div>
+              </p>
+      </section>
+        </div>
     </div>
   );
 };

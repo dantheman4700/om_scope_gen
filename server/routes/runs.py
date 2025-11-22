@@ -260,30 +260,30 @@ async def list_runs(
 
     responses: List[RunStatusResponse] = []
 
-    db_runs = (
-        db.query(models.Run)
+        db_runs = (
+            db.query(models.Run)
         .filter(models.Run.deal_id == deal_uuid)
-        .order_by(models.Run.created_at.desc())
-        .all()
-    )
-    for run in db_runs:
-        response = _db_run_to_response(run)
-        job = job_map.pop(run.id, None)
-        if job is not None:
-            live = _job_to_response(job)
-            response.status = live.status
-            response.started_at = live.started_at or response.started_at
-            response.finished_at = live.finished_at or response.finished_at
-            response.result_path = live.result_path or response.result_path
-            response.error = live.error or response.error
-            response.params = live.params or response.params
-            response.instructions = live.instructions or response.instructions
-            response.included_file_ids = live.included_file_ids or response.included_file_ids
-            response.parent_run_id = live.parent_run_id or response.parent_run_id
-            response.extracted_variables_artifact_id = (
-                live.extracted_variables_artifact_id or response.extracted_variables_artifact_id
-            )
-        responses.append(response)
+            .order_by(models.Run.created_at.desc())
+            .all()
+        )
+        for run in db_runs:
+            response = _db_run_to_response(run)
+            job = job_map.pop(run.id, None)
+            if job is not None:
+                live = _job_to_response(job)
+                response.status = live.status
+                response.started_at = live.started_at or response.started_at
+                response.finished_at = live.finished_at or response.finished_at
+                response.result_path = live.result_path or response.result_path
+                response.error = live.error or response.error
+                response.params = live.params or response.params
+                response.instructions = live.instructions or response.instructions
+                response.included_file_ids = live.included_file_ids or response.included_file_ids
+                response.parent_run_id = live.parent_run_id or response.parent_run_id
+                response.extracted_variables_artifact_id = (
+                    live.extracted_variables_artifact_id or response.extracted_variables_artifact_id
+                )
+            responses.append(response)
 
     # Include any remaining in-memory jobs (e.g., very new jobs not yet persisted)
     for job in job_map.values():
@@ -354,7 +354,7 @@ async def get_run(
         rbac.ensure_deal_access(db, current_user, run.deal_id)
         return _db_run_to_response(run)
 
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
 
 
 @oms_router.get("/", response_model=List[DealOmResponse])

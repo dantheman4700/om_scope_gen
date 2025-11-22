@@ -76,7 +76,13 @@ The repository tracks the schema dump from the Mac mini (`vectordb_schema.sql`).
 docker exec -it psql-db-1 psql -U postgres -d vectordb -f /path/to/vectordb_schema.sql
 ```
 
-Otherwise, ensure the running database already contains the required tables and the `vector`, `pgcrypto`, and `uuid-ossp` extensions.
+Otherwise, ensure the running database already contains the required tables and the `vector`, `pgcrypto`, and `uuid-ossp` extensions. The repo now tracks the canonical schema under `docs/database/schema.sql`; you can apply it to a fresh Postgres instance with:
+
+```bash
+psql "$DATABASE_DSN" -f docs/database/schema.sql
+```
+
+and re-export changes with `pg_dump --schema-only --no-owner --file docs/database/schema.sql "$DATABASE_DSN"`.
 
 ## Configuration Highlights
 
