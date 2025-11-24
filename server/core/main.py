@@ -23,7 +23,6 @@ from .ingest import DocumentIngester
 from .extractor import GeminiExtractor
 from .renderer import TemplateRenderer
 from .modes import ResearchMode
-from .history_retrieval import HistoryRetriever
 
 
 class ScopeDocGenerator:
@@ -33,7 +32,6 @@ class ScopeDocGenerator:
         self,
         input_dir: Optional[Path] = None,
         output_dir: Optional[Path] = None,
-        history_retriever: Optional[HistoryRetriever] = None,
         project_dir: Optional[Path] = None,
     ):
         """
@@ -75,7 +73,6 @@ class ScopeDocGenerator:
         self.ingester = DocumentIngester()
         self.extractor = GeminiExtractor()
         self.renderer = TemplateRenderer(TEMPLATE_PATH)
-        self.history_retriever = history_retriever
         
         # Load schemas
         self.variables_schema = self._load_json(VARIABLES_SCHEMA_PATH)
@@ -321,21 +318,11 @@ class ScopeDocGenerator:
         print("="*80)
         
         # Build compact extraction input: instructions + context_pack + top-K evidence quotes per file
-        reference_block = None
-        if self.history_retriever:
-            try:
-                reference_block = self.history_retriever.fetch_reference_block(context_pack)
-                if reference_block:
-                    print("[OK] Loaded reference estimates from legacy scopes")
-            except Exception as history_err:
-                print(f"[WARN] Failed to fetch legacy references: {history_err}")
-
         compact_input = self._build_compact_input(
             analysis_docs,
             context_pack,
             max_quotes_per_file=5,
             instructions=instructions,
-            reference_block=reference_block,
             research_findings=research_findings,
         )
 
@@ -726,7 +713,6 @@ def main():
         generator = ScopeDocGenerator(
             input_dir=args.input_dir,
             output_dir=args.output_dir,
-            history_retriever=None,
         )
         # Attach debug flag to instance
         setattr(generator, 'debug', args.debug)

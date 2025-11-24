@@ -186,8 +186,6 @@ class Listing(Base):
         "ListingAccessRequest", back_populates="listing", cascade="all, delete-orphan"
     )
 
-
-
 class ListingAccessRequest(Base):
     __tablename__ = "listing_access_requests"
 

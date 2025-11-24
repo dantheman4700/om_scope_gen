@@ -334,11 +334,11 @@ async def list_documents(
 @router.post("/", response_model=List[DealDocumentResponse], status_code=status.HTTP_201_CREATED)
 async def upload_documents(
     deal_id: UUID,
-    files: List[UploadFile] = File(...),
     request: Request,
     db: Session = Depends(db_session),
     storage: StorageBackend = Depends(get_storage),
     current_user: SessionUser = Depends(require_roles("editor", "admin")),
+    files: List[UploadFile] = File(...),
 ) -> List[DealDocumentResponse]:
     if not files:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No files uploaded")

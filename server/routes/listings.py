@@ -54,12 +54,13 @@ class ListingResponse(BaseModel):
     status: str
     hero_image_url: Optional[str]
     requires_nda: bool
-    metadata: dict = Field(alias="metadata_json")
+    metadata: dict
     published_at: Optional[str]
     created_at: str
     updated_at: str
 
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+    class Config:
+        from_attributes = True
 
 
 class AccessRequestBase(BaseModel):
@@ -97,6 +98,12 @@ class AccessRequestResponse(BaseModel):
 
 def _normalize_slug(raw: str) -> str:
     return raw.strip().lower()
+
+
+def _as_listing_response(listing: models.Listing) -> ListingResponse:
+    # Attach metadata attribute for Pydantic since SQLA column is metadata_json
+    setattr(listing, "metadata", listing.metadata_json)
+    return ListingResponse.model_validate(listing)
 
 
 def _get_listing(db: Session, listing_id: UUID) -> models.Listing:
@@ -140,7 +147,7 @@ async def list_listings(
     if status_filter:
         query = query.filter(models.Listing.status == status_filter)
     listings = query.order_by(models.Listing.created_at.desc()).all()
-    return [ListingResponse.model_validate(listing) for listing in listings]
+    return [_as_listing_response(listing) for listing in listings]
 
 
 @router.post("/", response_model=ListingResponse, status_code=status.HTTP_201_CREATED)
@@ -166,7 +173,7 @@ async def create_listing(
     db.add(listing)
     db.commit()
     db.refresh(listing)
-    return ListingResponse.model_validate(listing)
+    return _as_listing_response(listing)
 
 
 @router.get("/{listing_id}", response_model=ListingResponse)
@@ -176,7 +183,7 @@ async def get_listing(
     current_user: SessionUser = Depends(require_roles("viewer", "editor", "admin")),
 ) -> ListingResponse:
     listing = _get_listing_for_user(db, listing_id, current_user)
-    return ListingResponse.model_validate(listing)
+    return _as_listing_response(listing)
 
 
 @router.patch("/{listing_id}", response_model=ListingResponse)
@@ -209,7 +216,7 @@ async def update_listing(
 
     db.commit()
     db.refresh(listing)
-    return ListingResponse.model_validate(listing)
+    return _as_listing_response(listing)
 
 
 @router.get(
