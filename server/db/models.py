@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, date
+from typing import Optional
 from uuid import UUID as UUID_t, uuid4
 
 from sqlalchemy import (
@@ -46,8 +47,8 @@ class Deal(Base):
     )
     created_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
-    owner: Mapped["User | None"] = relationship("User", back_populates="deals_owned")
-    team: Mapped["Team | None"] = relationship("Team", back_populates="deals")
+    owner: Mapped[Optional["User"]] = relationship("User", back_populates="deals_owned")
+    team: Mapped[Optional["Team"]] = relationship("Team", back_populates="deals")
     documents: Mapped[list["Document"]] = relationship("Document", back_populates="deal", cascade="all, delete-orphan")
     listings: Mapped[list["Listing"]] = relationship("Listing", back_populates="deal", cascade="all, delete-orphan")
     embeddings: Mapped[list["Embedding"]] = relationship(
@@ -173,7 +174,7 @@ class Listing(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
     hero_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     requires_nda: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    metadata_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -184,6 +185,14 @@ class Listing(Base):
     access_requests: Mapped[list["ListingAccessRequest"]] = relationship(
         "ListingAccessRequest", back_populates="listing", cascade="all, delete-orphan"
     )
+
+    @property
+    def metadata(self) -> dict:
+        return self.metadata_json
+
+    @metadata.setter
+    def metadata(self, value: Optional[dict]) -> None:
+        self.metadata_json = value or {}
 
 
 class ListingAccessRequest(Base):
@@ -202,7 +211,7 @@ class ListingAccessRequest(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     listing: Mapped[Listing] = relationship("Listing", back_populates="access_requests")
-    reviewer: Mapped["User | None"] = relationship("User", back_populates="reviewed_access_requests")
+    reviewer: Mapped[Optional["User"]] = relationship("User", back_populates="reviewed_access_requests")
 
 
 class ProcessingLog(Base):
@@ -352,7 +361,7 @@ class Run(Base):
     extracted_variables_artifact_id: Mapped[UUID_t | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
     deal: Mapped[Deal] = relationship("Deal", back_populates="runs")
-    parent_run: Mapped["Run | None"] = relationship("Run", remote_side=[id], uselist=False)
+    parent_run: Mapped[Optional["Run"]] = relationship("Run", remote_side=[id], uselist=False)
     steps: Mapped[list["RunStep"]] = relationship("RunStep", back_populates="run", cascade="all, delete-orphan")
     artifacts: Mapped[list["Artifact"]] = relationship("Artifact", back_populates="run", cascade="all, delete-orphan")
 

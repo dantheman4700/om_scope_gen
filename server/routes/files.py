@@ -528,7 +528,6 @@ async def summarize_document(
     db.commit()
     db.refresh(record)
 
-) -> DealDocumentResponse:
     return DealDocumentResponse.model_validate(record)
 
 
