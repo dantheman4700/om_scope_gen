@@ -3,8 +3,8 @@
 __version__ = "0.1.0"
 
 from .ingest import DocumentIngester
-from .llm import ClaudeExtractor
+from .extractor import GeminiExtractor
 from .renderer import TemplateRenderer
 
-__all__ = ['DocumentIngester', 'ClaudeExtractor', 'TemplateRenderer']
+__all__ = ['DocumentIngester', 'GeminiExtractor', 'TemplateRenderer']
 

@@ -20,9 +20,10 @@ from .config import (
     VECTOR_STORE_DSN,
 )
 from .ingest import DocumentIngester
-from .llm import ClaudeExtractor
+from .extractor import GeminiExtractor
 from .renderer import TemplateRenderer
 from .modes import ResearchMode
+from .history_retrieval import HistoryRetriever
 
 
 class ScopeDocGenerator:
@@ -72,7 +73,7 @@ class ScopeDocGenerator:
 
         # Initialize components
         self.ingester = DocumentIngester()
-        self.extractor = ClaudeExtractor()
+        self.extractor = GeminiExtractor()
         self.renderer = TemplateRenderer(TEMPLATE_PATH)
         self.history_retriever = history_retriever
         
@@ -314,7 +315,7 @@ class ScopeDocGenerator:
             json.dump(context_pack, f, indent=2)
         print(f"[OK] Saved context pack: {context_path}")
 
-        # Step 4: Extract variables using Claude
+        # Step 4: Extract variables using Gemini
         print("\n" + "="*80)
         print("EXTRACTING VARIABLES")
         print("="*80)
@@ -341,7 +342,7 @@ class ScopeDocGenerator:
         input_size = len(compact_input)
         if input_size > 120_000:
             print(
-                f"[WARN] Claude extraction payload is very large ({input_size:,} characters). "
+                f"[WARN] Gemini extraction payload is very large ({input_size:,} characters). "
                 "Consider reducing document size or summarizing additional files to avoid malformed responses."
             )
 
@@ -381,7 +382,7 @@ class ScopeDocGenerator:
             print("[ERROR] Variable extraction failed:", detail)
             if "No JSON object found" in detail:
                 print(
-                    "[HINT] Claude returned malformed JSON. "
+                    "[HINT] Gemini returned malformed JSON. "
                     "Large inputs or unexpected model output can cause this. Check logs and consider minimizing the prompt."
                 )
             raise
@@ -400,7 +401,7 @@ class ScopeDocGenerator:
             json.dump(variables, f, indent=2)
         print(f"[OK] Saved extracted variables to: {intermediate_path}")
         
-        # Research disabled (Perplexity & Claude integrations removed)
+        # Research disabled (Perplexity integrations removed)
         post_findings: list = []
         
         # Step 4: Interactive refinement (optional)

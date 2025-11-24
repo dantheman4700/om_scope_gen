@@ -23,7 +23,6 @@ from ..adapters.storage import StorageBackend
 from ..core.config import DATA_ROOT
 from ..core.extraction import extract_text
 from ..core.ingest import DocumentIngester, MAX_NATIVE_PDF_BYTES, MAX_NATIVE_PDF_PAGES
-from ..core.llm import ClaudeExtractor
 from ..core.summarizer import FileSummarizer
 from ..dependencies import db_session, get_storage
 from ..db import models
@@ -43,7 +42,7 @@ router = APIRouter(prefix="/deals/{deal_id}/documents", tags=["documents"])
 
 LOGGER = logging.getLogger(__name__)
 
-# As of Nov 2025, from https://support.anthropic.com/en/articles/8241126-what-kinds-of-documents-can-i-upload-to-claude-ai
+# Supported document extensions for native uploads
 _SUPPORTED_DOC_EXTENSIONS = {
     ".pdf",
     ".doc",
@@ -252,7 +251,7 @@ def _extract_pdf_page_count(contents: bytes) -> Optional[int]:
 def _get_file_summarizer() -> FileSummarizer:
     global _FILE_SUMMARIZER
     if _FILE_SUMMARIZER is None:
-        _FILE_SUMMARIZER = FileSummarizer(ClaudeExtractor())
+        _FILE_SUMMARIZER = FileSummarizer()
     return _FILE_SUMMARIZER
 
 

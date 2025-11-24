@@ -1,18 +1,22 @@
-"""Per-file summarization with evidence and caching."""
+"""Per-file summarisation with Gemini (fallback-friendly)."""
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from .config import OUTPUT_DIR, MAX_TOKENS, TEMPERATURE
-from .llm import ClaudeExtractor
+import google.generativeai as genai
+from google.api_core.exceptions import GoogleAPIError
+
+from .config import MAX_TOKENS, OUTPUT_DIR, TEMPERATURE
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -23,17 +27,28 @@ class FileSummary:
 
 
 class FileSummarizer:
-    """Creates structured, decision-oriented summaries with evidence quotes per file.
+    """Creates structured, decision-oriented summaries with optional Gemini support."""
 
-    Uses the existing ClaudeExtractor client for API calls and robust backoff.
-    Caches summaries by content hash to avoid reprocessing unchanged files.
-    """
-
-    def __init__(self, extractor: ClaudeExtractor, cache_root: Optional[Path] = None) -> None:
-        self.extractor = extractor
+    def __init__(self, cache_root: Optional[Path] = None) -> None:
         self.cache_root = (cache_root or (OUTPUT_DIR / "artifacts" / "summaries")).resolve()
         self.cache_root.mkdir(parents=True, exist_ok=True)
 
+        key = os.getenv("GEMINI_API_KEY")
+        self._model = None
+        if key:
+            try:
+                genai.configure(api_key=key)
+                model_name = os.getenv("GEMINI_MODEL", "models/gemini-2.5-pro")
+                self._model = genai.GenerativeModel(model_name)
+            except Exception as exc:  # pragma: no cover - configuration errors
+                LOGGER.warning("Failed to initialise Gemini for summaries: %s", exc)
+                self._model = None
+        else:
+            LOGGER.info(
+                "GEMINI_API_KEY not configured; oversized files will use heuristic summaries."
+            )
+
+    # ------------------------------------------------------------------ public API
     def summarize_file(
         self,
         filename: str,
@@ -44,10 +59,7 @@ class FileSummarizer:
         doc_stub = {
             "filename": filename,
             "content": content,
-            "path": None,
             "media_type": "text/plain",
-            "source_type": "text",
-            "size_bytes": len(content.encode("utf-8", errors="ignore")),
             "upload_via": "text",
             "can_upload": False,
             "content_hash": self._hash_text(content),
@@ -66,6 +78,7 @@ class FileSummarizer:
     ) -> FileSummary:
         filename = document.get("filename", "unknown")
         content = document.get("content", "")
+
         cache_key = self._make_cache_key(
             filename,
             content,
@@ -76,54 +89,51 @@ class FileSummarizer:
         cache_path = self.cache_root / f"{self._sanitize_name(filename)}.{cache_key}.json"
         if cache_path.exists():
             try:
-                with open(cache_path, 'r', encoding='utf-8') as f:
+                with open(cache_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 return FileSummary(filename=filename, summary=data, cache_path=cache_path)
             except Exception:
                 pass
 
+        if not self._model:
+            summary = self._minimal_stub(filename)
+            return FileSummary(filename=filename, summary=summary, cache_path=None)
+
         prompt = self._build_prompt(document, project_focus, file_note)
-        message_content = self._build_message_content(document, prompt)
-
-        # Exponential backoff for rate limits/errors
         attempt = 0
-        while True:
+        while attempt < 3:
             try:
-                response = self.extractor.client.messages.create(
-                    model=self.extractor.model,
-                    max_tokens=min(4000, MAX_TOKENS),
-                    temperature=max(0.1, TEMPERATURE),
-                    system=self._system_instructions(),
-                    messages=[{"role": "user", "content": message_content}],
+                response = self._model.generate_content(
+                    prompt,
+                    generation_config=genai.GenerationConfig(
+                        temperature=max(0.1, TEMPERATURE),
+                        max_output_tokens=min(2048, MAX_TOKENS),
+                    ),
                 )
-                text = response.content[0].text
-                summary = self._parse_json(text)
-
-                with open(cache_path, 'w', encoding='utf-8') as f:
+                if not response or not response.text:
+                    raise ValueError("Gemini returned an empty summary response")
+                summary = self._parse_json(response.text)
+                with open(cache_path, "w", encoding="utf-8") as f:
                     json.dump(summary, f, indent=2)
                 return FileSummary(filename=filename, summary=summary, cache_path=cache_path)
+            except GoogleAPIError as exc:  # pragma: no cover - external service
+                wait = min(20, 5 * (2**attempt))
+                LOGGER.warning(
+                    "Gemini rate limit while summarising %s. Retrying in %ss (attempt %s)",
+                    filename,
+                    wait,
+                    attempt + 1,
+                )
+                time.sleep(wait)
+                attempt += 1
+            except Exception as exc:
+                LOGGER.error("Failed to summarise %s: %s", filename, exc)
+                break
 
-            except Exception as e:
-                msg = str(e)
-                if 'rate_limit' in msg or '429' in msg:
-                    wait = min(20, 5 * (2 ** attempt))
-                    print(f"[WARN] Rate limit while summarizing {filename}. Retrying in {wait}s (attempt {attempt+1})")
-                    time.sleep(wait)
-                    attempt += 1
-                    if attempt >= 3:
-                        print(f"[ERROR] Failed to summarize {filename} due to repeated rate limits; returning minimal stub")
-                        return FileSummary(filename=filename, summary=self._minimal_stub(filename), cache_path=None)
-                    continue
-                else:
-                    print(f"[ERROR] Failed to summarize {filename}: {e}")
-                    return FileSummary(filename=filename, summary=self._minimal_stub(filename), cache_path=None)
+        LOGGER.error("Falling back to heuristic summary for %s", filename)
+        return FileSummary(filename=filename, summary=self._minimal_stub(filename), cache_path=None)
 
-    def _system_instructions(self) -> str:
-        return (
-            "You are a senior solutions architect. Summarize files for technical scope planning. "
-            "Produce strictly valid JSON matching the schema instructed. Preserve key evidence via quotes."
-        )
-
+    # ------------------------------------------------------------------ helpers
     def _build_prompt(
         self,
         document: Dict[str, Any],
@@ -162,14 +172,14 @@ class FileSummarizer:
             header.append(f"SOURCE TYPE: {source_type}; INGEST METHOD: {upload_via}")
         if document.get("page_count"):
             header.append(f"PAGE COUNT: {document['page_count']}")
-        if document.get("can_upload") and upload_via == 'attachment':
+        if document.get("can_upload") and upload_via == "attachment":
             header.append("NOTE: Original file provided via native upload in this message.")
-        elif upload_via == 'ocr':
+        elif upload_via == "ocr":
             header.append("NOTE: Content obtained via OCR from the original file.")
-        elif upload_via == 'skipped':
+        elif upload_via == "skipped":
             header.append("WARNING: File exceeded upload limits; only placeholder content available.")
 
-        return (
+        instruction = (
             "\n".join(header)
             + "\n\nGOAL: Create a decision-oriented summary for scope planning.\n"
             + "Focus on: pain points, risks, integration complexity, unknowns, and what increases effort.\n"
@@ -179,62 +189,28 @@ class FileSummarizer:
             + "\n\nCONTENT:\n"
             + content
         )
-
-    def _build_message_content(self, document: Dict[str, Any], prompt: str) -> List[Dict[str, Any]]:
-        blocks: List[Dict[str, Any]] = []
-
-        if document.get("can_upload") and document.get("upload_via") == 'attachment':
-            path = document.get("path")
-            media_type = document.get("media_type", "application/octet-stream")
-            if path:
-                try:
-                    data_b64 = self._encode_base64(Path(path))
-                    attachment_type = 'document'
-                    if media_type.startswith('image/'):
-                        attachment_type = 'image'
-                    blocks.append({
-                        "type": attachment_type,
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": data_b64,
-                        },
-                    })
-                except Exception as exc:
-                    print(f"[WARN] Could not attach file {document.get('filename')}: {exc}")
-
-        blocks.append({"type": "text", "text": prompt})
-        return blocks
-
-    def _encode_base64(self, path: Path) -> str:
-        with open(path, 'rb') as f:
-            return base64.standard_b64encode(f.read()).decode('utf-8')
-
-    def _hash_text(self, text: str) -> str:
-        hasher = hashlib.sha256()
-        hasher.update(text.encode('utf-8', errors='ignore'))
-        return hasher.hexdigest()
+        return instruction
 
     def _parse_json(self, text: str) -> Dict[str, Any]:
-        t = text.strip()
-        if t.startswith('{') and t.endswith('}'):
-            return json.loads(t)
-        fence = t.find("```json")
-        if fence != -1:
-            fence_end = t.find("```", fence + 7)
-            if fence_end != -1:
-                return json.loads(t[fence + 7:fence_end].strip())
-        start = t.find('{')
-        end = t.rfind('}')
+        cleaned = text.strip()
+        if cleaned.startswith("{") and cleaned.endswith("}"):
+            return json.loads(cleaned)
+        if "```" in cleaned:
+            start = cleaned.find("```json")
+            if start != -1:
+                end = cleaned.find("```", start + 7)
+                if end != -1:
+                    return json.loads(cleaned[start + 7 : end].strip())
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
         if start != -1 and end != -1 and end > start:
-            return json.loads(t[start:end + 1])
-        # Fallback minimal
-        return self._minimal_stub("unknown")
+            return json.loads(cleaned[start : end + 1])
+        raise ValueError("No JSON object found in summary response")
 
     def _minimal_stub(self, filename: str) -> Dict[str, Any]:
         return {
             "filename": filename,
-            "purpose": "",
+            "purpose": "Summary unavailable (Gemini disabled).",
             "key_entities": [],
             "pain_points": [],
             "risks": [],
@@ -254,18 +230,26 @@ class FileSummarizer:
         file_note: Optional[str],
         content_hash: Optional[str] = None,
     ) -> str:
-        h = hashlib.sha256()
-        h.update(filename.encode('utf-8', errors='ignore'))
-        h.update(content.encode('utf-8', errors='ignore'))
+        import hashlib
+
+        hasher = hashlib.sha256()
+        hasher.update(filename.encode("utf-8", errors="ignore"))
+        hasher.update(content.encode("utf-8", errors="ignore"))
         if project_focus:
-            h.update(project_focus.encode('utf-8', errors='ignore'))
+            hasher.update(project_focus.encode("utf-8", errors="ignore"))
         if file_note:
-            h.update(file_note.encode('utf-8', errors='ignore'))
+            hasher.update(file_note.encode("utf-8", errors="ignore"))
         if content_hash:
-            h.update(content_hash.encode('utf-8', errors='ignore'))
-        return h.hexdigest()[:16]
+            hasher.update(content_hash.encode("utf-8", errors="ignore"))
+        return hasher.hexdigest()[:16]
+
+    def _hash_text(self, text: str) -> str:
+        import hashlib
+
+        hasher = hashlib.sha256()
+        hasher.update(text.encode("utf-8", errors="ignore"))
+        return hasher.hexdigest()
 
     def _sanitize_name(self, name: str) -> str:
-        return "".join(c if c.isalnum() or c in ('.','-','_') else '_' for c in name)
-
+        return "".join(c if c.isalnum() or c in (".", "-", "_") else "_" for c in name)
 
