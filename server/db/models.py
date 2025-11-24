@@ -186,13 +186,6 @@ class Listing(Base):
         "ListingAccessRequest", back_populates="listing", cascade="all, delete-orphan"
     )
 
-    @property
-    def metadata(self) -> dict:
-        return self.metadata_json
-
-    @metadata.setter
-    def metadata(self, value: Optional[dict]) -> None:
-        self.metadata_json = value or {}
 
 
 class ListingAccessRequest(Base):

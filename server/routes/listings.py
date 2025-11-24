@@ -7,7 +7,7 @@ from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session, joinedload
 
 from ..dependencies import db_session
@@ -54,13 +54,12 @@ class ListingResponse(BaseModel):
     status: str
     hero_image_url: Optional[str]
     requires_nda: bool
-    metadata: dict
+    metadata: dict = Field(alias="metadata_json")
     published_at: Optional[str]
     created_at: str
     updated_at: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class AccessRequestBase(BaseModel):
@@ -162,7 +161,7 @@ async def create_listing(
         status=payload.status or "draft",
         hero_image_url=payload.hero_image_url,
         requires_nda=payload.requires_nda,
-        metadata=payload.metadata or {},
+        metadata_json=payload.metadata or {},
     )
     db.add(listing)
     db.commit()
@@ -204,7 +203,7 @@ async def update_listing(
     if payload.requires_nda is not None:
         listing.requires_nda = payload.requires_nda
     if payload.metadata is not None:
-        listing.metadata = payload.metadata
+        listing.metadata_json = payload.metadata
     if payload.published_at is not None:
         listing.published_at = payload.published_at  # Expect ISO string; DB adapter will coerce
 
