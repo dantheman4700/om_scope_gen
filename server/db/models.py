@@ -173,7 +173,7 @@ class Listing(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
     hero_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     requires_nda: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    metadata: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    metadata_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
