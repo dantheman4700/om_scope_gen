@@ -15,8 +15,8 @@ from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session
 
 from server.core.modes import ResearchMode
-from server.core.config import DATA_ROOT, HISTORY_EMBEDDING_MODEL
-from server.core.history_profiles import ProfileEmbedder
+from server.core.config import DATA_ROOT
+from server.core.embeddings import ProfileEmbedder
 from docx import Document
 
 from ..services import JobRegistry, RunOptions
@@ -570,21 +570,37 @@ async def embed_run_output(
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to parse variables: {exc}")
 
-    # Build compact profile text (same as import system)
+    # Build compact profile text directly from variables
     try:
-        from server.core.history_profiles import build_profile_text
-        profile_text = build_profile_text(
-            title=variables.get("project_name"),
-            variables=variables,
-            services=variables.get("services"),
-            tags=variables.get("tags"),
-        )
+        profile_text_parts = []
+        title = variables.get("project_name") or variables.get("deal_name")
+        if title:
+            profile_text_parts.append(f"title:{str(title).strip()}")
+        industry = variables.get("industry")
+        if industry:
+            profile_text_parts.append(f"industry:{str(industry).strip()}")
+        project_type = variables.get("project_type") or variables.get("solution_type")
+        if project_type:
+            profile_text_parts.append(f"project_type:{str(project_type).strip()}")
+        services = variables.get("services") or []
+        if services:
+            if isinstance(services, list):
+                profile_text_parts.append("services:" + ",".join(str(x).strip() for x in services if x))
+            else:
+                profile_text_parts.append("services:" + str(services).strip())
+        tags = variables.get("tags") or []
+        if tags:
+            if isinstance(tags, list):
+                profile_text_parts.append("tags:" + ",".join(str(x).strip() for x in tags if x))
+            else:
+                profile_text_parts.append("tags:" + str(tags).strip())
+        profile_text = " | ".join(profile_text_parts)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to build profile: {exc}")
 
     # Generate embedding from compact profile
     try:
-        embedder = ProfileEmbedder(HISTORY_EMBEDDING_MODEL)
+        embedder = ProfileEmbedder()
         embedding = list(embedder.embed(profile_text))
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Embedding generation failed: {exc}")

@@ -1,4 +1,4 @@
-"""Embedding utilities and profile builder for historical scopes."""
+"""(Deprecated) legacy profile helpers."""
 
 from __future__ import annotations
 

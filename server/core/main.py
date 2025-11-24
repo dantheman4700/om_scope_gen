@@ -12,20 +12,16 @@ from typing import Optional, List, Dict, Callable
 StepCallback = Callable[[str, str, Optional[str]], None]
 
 from .config import (
-    TEMPLATE_PATH,
-    VARIABLES_SCHEMA_PATH,
-    VARIABLES_GUIDE_PATH,
     INPUT_DOCS_DIR,
     OUTPUT_DIR,
-    HISTORY_ENABLED,
-    HISTORY_EMBEDDING_MODEL,
-    HISTORY_TOPN,
+    TEMPLATE_PATH,
+    VARIABLES_GUIDE_PATH,
+    VARIABLES_SCHEMA_PATH,
     VECTOR_STORE_DSN,
 )
 from .ingest import DocumentIngester
 from .llm import ClaudeExtractor
 from .renderer import TemplateRenderer
-from .history_retrieval import HistoryRetriever
 from .modes import ResearchMode
 
 
@@ -329,9 +325,9 @@ class ScopeDocGenerator:
             try:
                 reference_block = self.history_retriever.fetch_reference_block(context_pack)
                 if reference_block:
-                    print("[OK] Loaded reference estimates from historical scopes")
+                    print("[OK] Loaded reference estimates from legacy scopes")
             except Exception as history_err:
-                print(f"[WARN] Failed to fetch historical references: {history_err}")
+                print(f"[WARN] Failed to fetch legacy references: {history_err}")
 
         compact_input = self._build_compact_input(
             analysis_docs,
@@ -709,26 +705,6 @@ def main():
         help="Override date_created (YYYY-MM-DD); defaults to today's date"
     )
     parser.add_argument(
-        '--history-use',
-        action='store_true',
-        help="Enable historical scope retrieval for reference estimates"
-    )
-    parser.add_argument(
-        '--history-dsn',
-        type=str,
-        help="PostgreSQL DSN for historical scope storage"
-    )
-    parser.add_argument(
-        '--history-model',
-        type=str,
-        help="Embedding model for historical profiles"
-    )
-    parser.add_argument(
-        '--history-topn',
-        type=int,
-        help="Number of similar historical scopes to retrieve"
-    )
-    parser.add_argument(
         '--mode',
         type=str,
         choices=['full', 'fast'],
@@ -746,39 +722,11 @@ def main():
     args = parser.parse_args()
     
     try:
-        history_retriever = None
-        if args.history_use or HISTORY_ENABLED:
-            # Use main database DSN for historical scope retrieval
-            history_dsn = args.history_dsn or VECTOR_STORE_DSN
-            if history_dsn:
-                history_model = args.history_model or HISTORY_EMBEDDING_MODEL
-                history_topn = args.history_topn or HISTORY_TOPN
-                try:
-                    history_retriever = HistoryRetriever(
-                        dsn=history_dsn,
-                        model_name=history_model,
-                        top_n=history_topn,
-                        extractor=None,  # temporary, replaced after generator init
-                    )
-                    print("[OK] Historical retrieval enabled (using main database)")
-                except Exception as err:
-                    print(f"[WARN] Could not initialize historical retrieval: {err}")
-            else:
-                print("[WARN] History retrieval requested but no DSN provided")
-
         generator = ScopeDocGenerator(
             input_dir=args.input_dir,
             output_dir=args.output_dir,
-            history_retriever=history_retriever,
+            history_retriever=None,
         )
-
-        # If history retriever exists, attach the live Claude extractor so it can build the query phrase via Claude
-        if history_retriever is not None:
-            try:
-                # generator.extractor is the live ClaudeExtractor
-                history_retriever.extractor = generator.extractor
-            except Exception:
-                pass
         # Attach debug flag to instance
         setattr(generator, 'debug', args.debug)
         

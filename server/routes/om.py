@@ -18,11 +18,11 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from server.core.config import (
-    get_deal_storage_dirs,
-    HISTORY_EMBEDDING_MODEL,
+    EMBEDDING_MODEL,
     OM_SECTIONS_PATH,
     OM_TEMPLATE_PATH,
     VECTOR_STORE_DSN,
+    get_deal_storage_dirs,
 )
 from server.core.extraction import (
     chunk_text,
@@ -31,7 +31,7 @@ from server.core.extraction import (
     IMAGE_EXTENSIONS,
 )
 from server.core.gemini import GeminiClient, GeminiError
-from server.core.history_profiles import EMBED_DIMENSIONS
+from server.core.embeddings import EMBED_DIMENSIONS
 from server.db import models
 from server.db.session import get_session
 from server.services.vector_store import VectorStore
@@ -52,7 +52,7 @@ with open(OM_SECTIONS_PATH, "r", encoding="utf-8") as fp:
 SECTION_DEFINITIONS = SECTION_CONFIG.get("sections", [])
 TEMPLATE = Template(Path(OM_TEMPLATE_PATH).read_text(encoding="utf-8"))
 
-EMBED_DIM = EMBED_DIMENSIONS.get(HISTORY_EMBEDDING_MODEL, 1536)
+EMBED_DIM = EMBED_DIMENSIONS.get(EMBEDDING_MODEL, 1536)
 if not VECTOR_STORE_DSN:
     raise RuntimeError("VECTOR_STORE_DSN is required for RAG operations")
 VECTOR_STORE = VectorStore(VECTOR_STORE_DSN, embedding_dim=EMBED_DIM or 1536)
@@ -255,7 +255,7 @@ def generate_om(
 
 def _embed_text(text: str) -> List[float]:
     response = OPENAI_CLIENT.embeddings.create(
-        model=HISTORY_EMBEDDING_MODEL,
+        model=EMBEDDING_MODEL,
         input=text,
     )
     return response.data[0].embedding

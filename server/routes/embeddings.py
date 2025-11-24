@@ -10,8 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from server.core.config import HISTORY_EMBEDDING_MODEL, get_project_data_dir
-from server.core.history_profiles import ProfileEmbedder
+from server.core.config import get_project_data_dir
+from server.core.embeddings import ProfileEmbedder
 from ..dependencies import db_session
 from ..security import rbac
 from .auth import SessionUser, require_roles
@@ -55,7 +55,7 @@ def _load_content(path: Path) -> str:
 
 
 def _get_embedder() -> ProfileEmbedder:
-    return ProfileEmbedder(HISTORY_EMBEDDING_MODEL)
+    return ProfileEmbedder()
 
 
 @router.post("/", response_model=EmbedScopeResponse)

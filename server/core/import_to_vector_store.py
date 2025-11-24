@@ -1,6 +1,6 @@
 """Import legacy scope documents into the main vector store.
 
-This CLI scans a directory of historical scopes (pdf/docx/md/txt),
+This CLI scans a directory of legacy scopes (pdf/docx/md/txt),
 extracts variables with Claude, builds a compact profile text, embeds
 with the configured model, and upserts into the app's pgvector store
 (`scope_embeddings`).
@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Optional
 from uuid import UUID
 
-from .config import HISTORY_EMBEDDING_MODEL, VECTOR_STORE_DSN
-from .history_profiles import ProfileEmbedder, build_profile_text
+from .config import VECTOR_STORE_DSN
+from .embeddings import ProfileEmbedder
 from .ingest import DocumentIngester
 from .llm import ClaudeExtractor
 from ..services.vector_store import VectorStore
@@ -23,7 +23,7 @@ from ..services.vector_store import VectorStore
 
 SUPPORTED_IMPORT_SUFFIXES = {".pdf", ".md", ".txt", ".docx", ".doc"}
 
-# Extraction schema and prompt for historical scope import
+# Extraction schema and prompt for legacy scope import
 EXTRACTION_SYSTEM_PROMPT = """
 You are an expert analyst cataloging past automation scope documents. Extract key estimation
 signals and project descriptors. Return ONLY valid JSON matching the schema provided.
@@ -83,9 +83,9 @@ def extract_variables_from_scope(
     extractor: ClaudeExtractor,
     attachment: dict | None = None,
 ) -> dict:
-    """Extract structured variables from a historical scope document using Claude."""
+    """Extract structured variables from a legacy scope document using Claude."""
     user_prompt = (
-        "Analyze the historical scope document (attached and/or included below) and extract the required fields.\n"
+        "Analyze the legacy scope document (attached and/or included below) and extract the required fields.\n"
         "Return JSON matching this schema (types indicate the expected value type):\n"
         f"{json.dumps(EXTRACTION_SCHEMA, indent=2)}"
     )
@@ -161,7 +161,7 @@ def import_directory_to_vector_store(
     directory: Path,
     *,
     project_id: Optional[str] = None,
-    doc_kind: str = "historical_scope",
+    doc_kind: str = "legacy_scope",
     embedding_model: Optional[str] = None,
     vector_store_dsn: Optional[str] = None,
 ) -> None:
@@ -177,8 +177,7 @@ def import_directory_to_vector_store(
     if not vector_dsn:
         raise RuntimeError("VECTOR_STORE_DSN is not configured; set DATABASE_DSN in your environment")
 
-    model_name = embedding_model or HISTORY_EMBEDDING_MODEL
-    embedder = ProfileEmbedder(model_name)
+    embedder = ProfileEmbedder(embedding_model)
     extractor = ClaudeExtractor()
 
     store = VectorStore(vector_dsn, embedding_dim=embedder.dim or 1536)
@@ -268,7 +267,7 @@ def import_directory_to_vector_store(
         try:
             store.upsert_embedding(
                 embedding=vector,
-                project_id=project_uuid,  # None for global historical scopes
+                project_id=project_uuid,  # None for global legacy records
                 doc_kind=doc_kind,
                 metadata=metadata,
             )
@@ -281,10 +280,15 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Import legacy scopes into the app's vector store")
-    parser.add_argument("directory", type=Path, help="Directory containing historical scopes (pdf/docx/md/txt)")
+    parser.add_argument("directory", type=Path, help="Directory containing legacy scopes (pdf/docx/md/txt)")
     parser.add_argument("--project-id", type=str, default=None, help="Optional project UUID to associate embeddings")
-    parser.add_argument("--doc-kind", type=str, default="historical_scope", help="doc_kind to label imported embeddings")
-    parser.add_argument("--embedding-model", type=str, default=None, help="Embedding model (default: config HISTORY_EMBEDDING_MODEL)")
+    parser.add_argument("--doc-kind", type=str, default="legacy_scope", help="doc_kind to label imported embeddings")
+    parser.add_argument(
+        "--embedding-model",
+        type=str,
+        default=None,
+        help="Embedding model (default: EMBEDDING_MODEL from config)",
+    )
     parser.add_argument("--dsn", type=str, default=None, help="Override vector store DSN (default: config VECTOR_STORE_DSN)")
 
     args = parser.parse_args()

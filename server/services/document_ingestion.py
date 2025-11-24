@@ -12,7 +12,7 @@ from openai import OpenAI
 from PyPDF2 import PdfReader
 from sqlalchemy.orm import joinedload
 
-from ..core.config import DATA_ROOT, HISTORY_EMBEDDING_MODEL
+from ..core.config import DATA_ROOT, EMBEDDING_MODEL
 from ..core.extraction import extract_text, chunk_text
 from ..db import models
 from ..db.models import utcnow
@@ -142,7 +142,7 @@ class DocumentIngestionService:
 
     def _embed_text(self, text: str) -> list[float]:
         response = self._openai.embeddings.create(
-            model=HISTORY_EMBEDDING_MODEL,
+            model=EMBEDDING_MODEL,
             input=text,
         )
         return response.data[0].embedding

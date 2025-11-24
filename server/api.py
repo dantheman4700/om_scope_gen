@@ -9,10 +9,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from server.core.config import (
     CORS_ALLOW_CREDENTIALS,
     CORS_ALLOW_ORIGINS,
-    HISTORY_EMBEDDING_MODEL,
+    EMBEDDING_MODEL,
     VECTOR_STORE_DSN,
 )
-from server.core.history_profiles import EMBED_DIMENSIONS
+from server.core.embeddings import EMBED_DIMENSIONS
 from server.routes import (
     artifacts_router,
     auth_router,
@@ -49,7 +49,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    embedding_dim = EMBED_DIMENSIONS.get(HISTORY_EMBEDDING_MODEL, 1536)
+    embedding_dim = EMBED_DIMENSIONS.get(EMBEDDING_MODEL, 1536)
     if not VECTOR_STORE_DSN:
         raise RuntimeError("VECTOR_STORE_DSN is required for the API to start")
     vector_store = VectorStore(VECTOR_STORE_DSN, embedding_dim=embedding_dim)

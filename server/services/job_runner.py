@@ -16,12 +16,8 @@ from uuid import UUID, uuid4
 
 from server.core.main import ScopeDocGenerator
 from server.core.modes import ResearchMode
-from server.core.config import (
-    DATA_ROOT,
-    HISTORY_EMBEDDING_MODEL,
-    STORAGE_PROVIDER,
-)
-from server.core.history_profiles import ProfileEmbedder
+from server.core.config import DATA_ROOT, EMBEDDING_MODEL, STORAGE_PROVIDER
+from server.core.embeddings import ProfileEmbedder
 
 from ..storage import ensure_project_structure
 from ..db.session import get_session
@@ -482,7 +478,7 @@ class JobRegistry:
         if self._embedder is not None:
             return self._embedder
         try:
-            self._embedder = ProfileEmbedder(HISTORY_EMBEDDING_MODEL)
+            self._embedder = ProfileEmbedder()
         except Exception as exc:
             print(f"[WARN] Vector embedding disabled: {exc}")
             self._embedder = None

@@ -79,14 +79,13 @@ DEALS_DATA_DIR = DATA_ROOT / "deals"
 INPUT_DOCS_DIR = DATA_ROOT / "legacy_input"
 OUTPUT_DIR = DATA_ROOT / "legacy_outputs"
 
-# Historical scope retrieval (optional) - now uses main database
+
 def _env_flag(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
-HISTORY_ENABLED = _env_flag("HISTORY_ENABLED")
-HISTORY_EMBEDDING_MODEL = os.getenv("HISTORY_EMBEDDING_MODEL", "text-embedding-3-small")
-HISTORY_TOPN = int(os.getenv("HISTORY_TOPN", "12"))
+# Primary embedding model for deal/document content
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
 # API Configuration
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
