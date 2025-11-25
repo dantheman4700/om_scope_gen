@@ -125,12 +125,9 @@ def _normalise_database_dsn(raw: Optional[str]) -> Optional[str]:
 
     cleaned = raw.replace("postgres://", "postgresql://", 1)
 
-    needs_ssl = (
-        STORAGE_PROVIDER == "supabase"
-        or AUTH_PROVIDER == "supabase"
-        or (SUPABASE_URL and "supabase" in SUPABASE_URL)
-        or ("supabase" in cleaned)
-    )
+    is_supabase_provider = STORAGE_PROVIDER == "supabase" or AUTH_PROVIDER == "supabase"
+    dsn_points_to_supabase = "supabase" in cleaned
+    needs_ssl = is_supabase_provider or dsn_points_to_supabase
     if needs_ssl and "sslmode" not in cleaned:
         separator = "&" if "?" in cleaned else "?"
         cleaned = f"{cleaned}{separator}sslmode=require"
