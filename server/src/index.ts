@@ -18,9 +18,6 @@ import servicesRoutes from './routes/services';
 import documentsRoutes from './routes/documents';
 import templatesRoutes from './routes/templates';
 
-// Import workers
-import { startDocumentWorker, startGenerationWorker } from './services/documentWorker';
-
 const app = express();
 
 // Middleware
@@ -83,18 +80,10 @@ async function start() {
     process.exit(1);
   }
 
-  // Start background workers for document processing
-  try {
-    const documentWorker = startDocumentWorker();
-    const generationWorker = startGenerationWorker();
-    console.log('📄 Document processing workers started');
-  } catch (error) {
-    console.warn('⚠️ Could not start workers (Redis may not be available):', (error as Error).message);
-  }
-
   app.listen(env.PORT, () => {
     console.log(`🚀 Server running on http://localhost:${env.PORT}`);
     console.log(`📁 Uploads directory: ${env.UPLOAD_DIR}`);
+    console.log(`📄 Document processing: in-memory queue (no Redis required)`);
   });
 }
 
@@ -112,4 +101,3 @@ process.on('SIGTERM', async () => {
 });
 
 start();
-

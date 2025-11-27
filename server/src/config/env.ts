@@ -23,9 +23,6 @@ export const env = {
   // Frontend URL (for CORS)
   FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:5173',
   
-  // Redis (for job queue)
-  REDIS_URL: process.env.REDIS_URL || 'redis://localhost:6379',
-  
   // AI Services
   OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
   GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',

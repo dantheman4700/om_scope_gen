@@ -13,7 +13,7 @@ An M&A marketplace platform for investment banks and advisors with AI-powered do
 ## Tech Stack
 
 - **Frontend**: React 18, TypeScript, Tailwind CSS, shadcn/ui
-- **Backend**: Express 5, PostgreSQL + pgvector, Redis, BullMQ
+- **Backend**: Express 5, PostgreSQL + pgvector
 - **AI**: OpenAI (embeddings), Gemini 2.5 Pro (content generation)
 
 ## Quick Start
@@ -22,7 +22,6 @@ An M&A marketplace platform for investment banks and advisors with AI-powered do
 
 - Node.js 18+
 - PostgreSQL 14+ with pgvector extension
-- Redis
 
 ### 1. Backend Setup
 
@@ -69,7 +68,6 @@ VITE_API_URL=http://localhost:3001/api
 PORT=3001
 DATABASE_URL=postgres://user:pass@localhost:5432/ma_platform
 JWT_SECRET=your-secret-key
-REDIS_URL=redis://localhost:6379
 OPENAI_API_KEY=sk-...
 GEMINI_API_KEY=...
 ```

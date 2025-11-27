@@ -6,7 +6,6 @@ Express.js API server for the M&A Platform with document generation capabilities
 
 - Node.js 18+
 - PostgreSQL 14+ with pgvector extension
-- Redis (for document processing queue)
 - npm or pnpm
 
 ## Setup
@@ -54,12 +53,6 @@ FRONTEND_URL=http://localhost:5173
 MAX_FILE_SIZE=20971520
 
 # ===========================================
-# Redis (required for document processing queue)
-# ===========================================
-# Install Redis: https://redis.io/docs/getting-started/
-REDIS_URL=redis://localhost:6379
-
-# ===========================================
 # AI Services (required for document generation)
 # ===========================================
 
@@ -84,19 +77,7 @@ CREATE EXTENSION vector;  -- Required for document embeddings
 \q
 ```
 
-### 4. Start Redis
-
-```bash
-# macOS with Homebrew
-brew services start redis
-
-# Docker
-docker run -d -p 6379:6379 redis:alpine
-
-# Windows (WSL or Docker recommended)
-```
-
-### 5. Run Migrations
+### 4. Run Migrations
 
 ```bash
 npm run db:migrate
@@ -213,9 +194,8 @@ server/
 │   ├── services/
 │   │   ├── documentExtractor.ts  # PDF/DOCX/PPTX/image extraction
 │   │   ├── documentGenerator.ts  # RAG + PDF/DOCX generation
-│   │   ├── documentWorker.ts     # Background job processor
 │   │   ├── embeddingService.ts   # OpenAI embeddings + pgvector
-│   │   └── queue.ts              # Bull/Redis job queue
+│   │   └── queue.ts              # In-memory job queue
 │   ├── types/
 │   │   ├── express.d.ts
 │   │   ├── mammoth.d.ts
@@ -259,7 +239,7 @@ psql -d ma_platform -c "
 ## Document Generation Flow
 
 1. **Upload** - Source documents (PDF, DOCX, PPTX, images, text) are uploaded via the API
-2. **Extract** - Background worker extracts text using pdf-parse, mammoth, officeparser, or Gemini Vision
+2. **Extract** - In-memory queue processes extraction using pdf-parse, mammoth, officeparser, or Gemini Vision
 3. **Embed** - Text is chunked and embedded using OpenAI text-embedding-3-small
 4. **Store** - Vectors stored in pgvector for similarity search
 5. **Generate** - When generating a document:
@@ -273,7 +253,6 @@ psql -d ma_platform -c "
 - **Express 5** - Web framework
 - **postgres.js** - Type-safe PostgreSQL queries
 - **pgvector** - Vector similarity search
-- **BullMQ + Redis** - Background job queue
 - **OpenAI** - text-embedding-3-small for embeddings
 - **Gemini 2.5 Pro** - Content extraction and generation
 - **Puppeteer** - PDF generation
@@ -283,4 +262,3 @@ psql -d ma_platform -c "
 - **multer** - File uploads
 - **zod** - Validation
 - **tsx** - TypeScript execution
-
