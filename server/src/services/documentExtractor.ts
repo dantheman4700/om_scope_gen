@@ -58,7 +58,13 @@ async function extractPDF(filePath: string): Promise<ExtractionResult> {
   const buffer = await fs.readFile(filePath);
   
   try {
-    const data = await pdf(buffer);
+    // Skip rendering pages (major memory saver) - we only need text
+    const options = {
+      // Don't render pages as images - just extract text
+      pagerender: () => Promise.resolve(''),
+    };
+    
+    const data = await pdf(buffer, options);
     const text = data.text.trim();
     
     // If PDF has extractable text, use it

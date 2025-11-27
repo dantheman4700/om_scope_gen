@@ -77,9 +77,15 @@ async function processQueue() {
 async function processExtraction(job: ExtractDocumentJob) {
   const { documentId, listingId, filePath, mimeType } = job;
   
+  const memUsage = () => {
+    const used = process.memoryUsage();
+    return `${Math.round(used.heapUsed / 1024 / 1024)}MB / ${Math.round(used.heapTotal / 1024 / 1024)}MB`;
+  };
+  
   console.log(`   Document ID: ${documentId}`);
   console.log(`   File: ${filePath}`);
   console.log(`   MIME: ${mimeType}`);
+  console.log(`   Memory: ${memUsage()}`);
   
   // Update status to processing
   await sql`
@@ -90,10 +96,10 @@ async function processExtraction(job: ExtractDocumentJob) {
   
   try {
     // Step 1: Extract text from document
-    console.log(`   Extracting text...`);
+    console.log(`   [1/3] Extracting text...`);
     const result = await extractDocument(filePath, mimeType);
-    console.log(`   Extracted ${result.text.length} characters (${result.metadata.wordCount} words)`);
-    console.log(`   Method: ${result.metadata.extractionMethod}`);
+    console.log(`   ✓ Extracted ${result.text.length} chars (${result.metadata.wordCount} words) via ${result.metadata.extractionMethod}`);
+    console.log(`   Memory after extraction: ${memUsage()}`);
     
     if (result.text.length === 0) {
       console.log(`   ⚠️ No text extracted from document`);
@@ -112,10 +118,12 @@ async function processExtraction(job: ExtractDocumentJob) {
     // Step 2: Create embeddings (if OpenAI key is configured)
     let chunkCount = 0;
     if (env.OPENAI_API_KEY) {
-      console.log(`   Creating embeddings...`);
+      console.log(`   [2/3] Creating embeddings...`);
+      console.log(`   Memory before embeddings: ${memUsage()}`);
       try {
         chunkCount = await storeChunksWithEmbeddings(documentId, listingId, result.text);
-        console.log(`   Created ${chunkCount} chunks with embeddings`);
+        console.log(`   ✓ Created ${chunkCount} chunks with embeddings`);
+        console.log(`   Memory after embeddings: ${memUsage()}`);
       } catch (embedError: any) {
         console.error(`   ⚠️ Embedding failed:`, embedError.message);
         // Continue - document is still extracted, just no embeddings
@@ -125,6 +133,7 @@ async function processExtraction(job: ExtractDocumentJob) {
     }
     
     // Step 3: Update status to completed
+    console.log(`   [3/3] Saving to database...`);
     await sql`
       UPDATE listing_documents 
       SET 

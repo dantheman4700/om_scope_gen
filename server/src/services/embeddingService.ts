@@ -58,11 +58,19 @@ export function chunkText(text: string): TextChunk[] {
   
   let startIndex = 0;
   let chunkIndex = 0;
+  let lastStartIndex = -1;
   
   while (startIndex < cleanedText.length) {
-    let endIndex = startIndex + chunkSizeChars;
+    // Infinite loop protection - if startIndex hasn't advanced, break
+    if (startIndex === lastStartIndex) {
+      console.log(`         [chunk] Breaking - startIndex stuck at ${startIndex}`);
+      break;
+    }
+    lastStartIndex = startIndex;
     
-    // Try to break at sentence or paragraph boundary
+    let endIndex = Math.min(startIndex + chunkSizeChars, cleanedText.length);
+    
+    // Try to break at sentence or paragraph boundary (only if not at end)
     if (endIndex < cleanedText.length) {
       // Look for paragraph break
       const paragraphBreak = cleanedText.lastIndexOf('\n\n', endIndex);
@@ -75,8 +83,6 @@ export function chunkText(text: string): TextChunk[] {
           endIndex = sentenceBreak;
         }
       }
-    } else {
-      endIndex = cleanedText.length;
     }
     
     const chunkContent = cleanedText.slice(startIndex, endIndex).trim();
@@ -93,13 +99,13 @@ export function chunkText(text: string): TextChunk[] {
       chunkIndex++;
     }
     
-    // Move start position with overlap
-    startIndex = endIndex - overlapChars;
-    
-    // Prevent infinite loop
-    if (startIndex >= cleanedText.length - 10) {
+    // If we've reached the end, break
+    if (endIndex >= cleanedText.length) {
       break;
     }
+    
+    // Move start position with overlap
+    startIndex = endIndex - overlapChars;
   }
   
   return chunks;
@@ -123,8 +129,15 @@ function findSentenceBreak(text: string, minIndex: number, maxIndex: number): nu
   return bestBreak;
 }
 
+// Memory helper
+const memUsage = () => {
+  const used = process.memoryUsage();
+  return `${Math.round(used.heapUsed / 1024 / 1024)}MB`;
+};
+
 /**
  * Create embeddings for text chunks using OpenAI
+ * Batches requests to avoid memory issues
  */
 export async function createEmbeddings(chunks: TextChunk[]): Promise<number[][]> {
   if (!env.OPENAI_API_KEY) {
@@ -135,16 +148,40 @@ export async function createEmbeddings(chunks: TextChunk[]): Promise<number[][]>
     return [];
   }
   
-  // Batch embed all chunks
-  const texts = chunks.map(c => c.content);
+  console.log(`      [embed] Starting, chunks: ${chunks.length}, memory: ${memUsage()}`);
   
-  const response = await openai.embeddings.create({
-    model: EMBEDDING_MODEL,
-    input: texts,
-    dimensions: EMBEDDING_DIMENSIONS,
-  });
+  const embeddings: number[][] = [];
+  const BATCH_SIZE = 5; // Smaller batch size
   
-  return response.data.map(d => d.embedding);
+  for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+    const batch = chunks.slice(i, i + BATCH_SIZE);
+    const texts = batch.map(c => c.content);
+    
+    console.log(`      [embed] Batch ${i / BATCH_SIZE + 1}: ${texts.length} texts, memory: ${memUsage()}`);
+    console.log(`      [embed] Calling OpenAI API...`);
+    
+    const response = await openai.embeddings.create({
+      model: EMBEDDING_MODEL,
+      input: texts,
+      dimensions: EMBEDDING_DIMENSIONS,
+    });
+    
+    console.log(`      [embed] API response received, memory: ${memUsage()}`);
+    
+    for (const item of response.data) {
+      embeddings.push(item.embedding);
+    }
+    
+    console.log(`      [embed] Embeddings extracted, memory: ${memUsage()}`);
+    
+    // Allow GC between batches
+    if (i + BATCH_SIZE < chunks.length) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+  
+  console.log(`      [embed] Complete, total embeddings: ${embeddings.length}, memory: ${memUsage()}`);
+  return embeddings;
 }
 
 /**
@@ -155,6 +192,8 @@ export async function storeChunksWithEmbeddings(
   listingId: string,
   text: string
 ): Promise<number> {
+  console.log(`      [store] Starting, text length: ${text.length}, memory: ${memUsage()}`);
+  
   // Chunk the text
   const chunks = chunkText(text);
   
@@ -162,10 +201,14 @@ export async function storeChunksWithEmbeddings(
     return 0;
   }
   
-  // Create embeddings
+  console.log(`      [store] Chunked into ${chunks.length} chunks, memory: ${memUsage()}`);
+  
+  // Create embeddings in batches
   const embeddings = await createEmbeddings(chunks);
   
-  // Store chunks in database
+  console.log(`      [store] Embeddings created: ${embeddings.length}, memory: ${memUsage()}`);
+  
+  // Store chunks one at a time to minimize memory usage
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
     const embedding = embeddings[i];
@@ -190,6 +233,9 @@ export async function storeChunksWithEmbeddings(
         ${JSON.stringify(chunk.metadata)}
       )
     `;
+    
+    // Clear reference to help GC
+    embeddings[i] = null as any;
   }
   
   return chunks.length;

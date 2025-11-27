@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import puppeteer from 'puppeteer';
+// NOTE: puppeteer is imported dynamically in generatePDF() to avoid loading Chromium on startup
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } from 'docx';
 import { sql } from '../db';
 import { env } from '../config/env';
@@ -191,7 +191,10 @@ async function generatePDF(
   baseFilename: string,
   listing: any
 ): Promise<string> {
-  const browser = await puppeteer.launch({
+  // Dynamic import to avoid loading Chromium on server startup
+  const puppeteer = await import('puppeteer');
+  
+  const browser = await puppeteer.default.launch({
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
